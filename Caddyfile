@@ -1,27 +1,31 @@
-jellyseerr:80, correll.tv:80 {
-    reverse_proxy jellyseerr:5055
+{
+	auto_https off
 }
 
-jellyfin:80 {
-    reverse_proxy host.docker.internal:8096
+http://jellyseerr.correll.tv {
+	reverse_proxy jellyseerr:5055
 }
 
-qbittorrent:80 {
-    reverse_proxy gluetun:8080
+http://jellyfin.correll.tv {
+	reverse_proxy host.docker.internal:8096
 }
 
-prowlarr:80 {
-    reverse_proxy prowlarr:9696
+http://qbt.correll.tv {
+	reverse_proxy gluetun:8080
 }
 
-sonarr:80 {
-    reverse_proxy sonarr:8989
+http://prowlarr.correll.tv {
+	reverse_proxy prowlarr:9696
 }
 
-radarr:80 {
-    reverse_proxy radarr:7878
+http://sonarr.correll.tv {
+	reverse_proxy sonarr:8989
 }
 
-bazarr:80 {
-    reverse_proxy bazarr:6767
+http://radarr.correll.tv {
+	reverse_proxy radarr:7878
+}
+
+http://bazarr.correll.tv {
+	reverse_proxy bazarr:6767
 }

@@ -22,15 +22,15 @@ setup differs.
 | Service | Purpose | Port | LAN hostname (via Caddy) |
 |---|---|---|---|
 | Gluetun | VPN tunnel (ProtonVPN via WireGuard) with port forwarding | 8080 (shared with qBittorrent) | — |
-| qBittorrent | Download client | 8080 (via gluetun) | `qbittorrent` |
+| qBittorrent | Download client | 8080 (via gluetun) | `qbt.correll.tv` |
 | qbittorrent-port-sync | Watches gluetun's forwarded port, pushes changes into qBittorrent automatically | — | — |
-| Prowlarr | Indexer aggregator — searches configured indexers, pushes results to Sonarr/Radarr | 9696 | `prowlarr` |
+| Prowlarr | Indexer aggregator — searches configured indexers, pushes results to Sonarr/Radarr | 9696 | `prowlarr.correll.tv` |
 | FlareSolverr | Solves Cloudflare challenges on Prowlarr's behalf for protected indexers | 8191 | — |
-| Sonarr | TV show search/grab/organize | 8989 | `sonarr` |
-| Radarr | Movie search/grab/organize | 7878 | `radarr` |
-| Bazarr | Subtitle fetching for Sonarr/Radarr libraries | 6767 | `bazarr` |
-| Jellyseerr | Request front-end — search a title, hit request, it flows to Sonarr/Radarr | 5055 | `jellyseerr`, `correll.tv` |
-| Caddy | Reverse proxy — drops port numbers, gives every service above a clean hostname | 80 | `jellyfin` also routes here to the host install |
+| Sonarr | TV show search/grab/organize | 8989 | `sonarr.correll.tv` |
+| Radarr | Movie search/grab/organize | 7878 | `radarr.correll.tv` |
+| Bazarr | Subtitle fetching for Sonarr/Radarr libraries | 6767 | `bazarr.correll.tv` |
+| Jellyseerr | Request front-end — search a title, hit request, it flows to Sonarr/Radarr | 5055 | `jellyseerr.correll.tv` |
+| Caddy | Reverse proxy — drops port numbers, gives every service above a clean hostname | 80 | `jellyfin.correll.tv` also routes here to the host install |
 
 Games are intentionally **not** included — there's no mature Sonarr/Radarr-equivalent for
 game libraries. Prowlarr's own search UI plus a manual qBittorrent grab works in the
@@ -194,28 +194,37 @@ together — every connection above needs its API key pasted in manually, once.
 
 ---
 
-## 6. LAN-wide access at clean hostnames (no port numbers)
+## 6. LAN-wide access at clean hostnames (`*.correll.tv`)
 
 Requires Pi-hole as your network's DNS. The `Caddyfile` in this repo has a route for
-every service:
+every service, each on its own subdomain of `correll.tv` (a domain already owned,
+repurposed here for LAN-only names — these records are never published publicly,
+they only resolve for devices using your Pi-hole):
 
 | Hostname | Routes to |
 |---|---|
-| `jellyseerr`, `correll.tv` | Jellyseerr |
-| `jellyfin` | your host Jellyfin |
-| `qbittorrent` | qBittorrent WebUI |
-| `prowlarr` | Prowlarr |
-| `sonarr` | Sonarr |
-| `radarr` | Radarr |
-| `bazarr` | Bazarr |
+| `jellyseerr.correll.tv` | Jellyseerr |
+| `jellyfin.correll.tv` | your host Jellyfin |
+| `qbt.correll.tv` | qBittorrent WebUI |
+| `prowlarr.correll.tv` | Prowlarr |
+| `sonarr.correll.tv` | Sonarr |
+| `radarr.correll.tv` | Radarr |
+| `bazarr.correll.tv` | Bazarr |
+
+Using a real, publicly-registered TLD (`.tv`) instead of a made-up one matters here:
+browsers decide whether a typed address is a URL or a search query based on whether
+the suffix is a recognized domain — a fake TLD often gets treated as a search term
+instead of navigated to. A real TLD is always recognized, so these load as pages, not
+search results, with no extra configuration needed.
+
+This is plain HTTP, deliberately — see the note below on why HTTPS isn't in play here.
 
 1. **Point your router at Pi-hole.** On Google Wifi: Google Home app > Wifi > Settings
    (gear) > Advanced networking > DNS > Custom > set to your machine's LAN IP.
 2. **Add a local DNS record in Pi-hole for each hostname above** — admin UI > Local DNS >
-   DNS Records — every one points at the same IP, your machine's LAN IP. (`correll.tv` is
-   a separate record pointed at the same IP; if you own that domain externally, this only
-   affects devices using your Pi-hole for DNS — it doesn't change what that domain
-   resolves to outside your network.)
+   DNS Records — every one points at the same IP, your machine's LAN IP. This only
+   affects devices using your Pi-hole for DNS; it doesn't touch what `correll.tv`
+   resolves to for anyone outside your network.
 3. **Free up port 80 for Caddy.** Pi-hole's own admin UI often also defaults to port 80 —
    if so, remap it (e.g. `8081:80` instead of `80:80`) in Pi-hole's compose file and
    recreate it. Pi-hole's DNS function (port 53) is unaffected either way.
@@ -240,16 +249,26 @@ other device), add hosts-file entries instead of relying on DNS for that one mac
 2. Open `C:\Windows\System32\drivers\etc\hosts`
 3. Add one line per hostname, all pointing at loopback:
    ```
-   127.0.0.1 jellyseerr
-   127.0.0.1 correll.tv
-   127.0.0.1 jellyfin
-   127.0.0.1 qbittorrent
-   127.0.0.1 prowlarr
-   127.0.0.1 sonarr
-   127.0.0.1 radarr
-   127.0.0.1 bazarr
+   127.0.0.1 jellyseerr.correll.tv
+   127.0.0.1 jellyfin.correll.tv
+   127.0.0.1 qbt.correll.tv
+   127.0.0.1 prowlarr.correll.tv
+   127.0.0.1 sonarr.correll.tv
+   127.0.0.1 radarr.correll.tv
+   127.0.0.1 bazarr.correll.tv
    ```
 4. Save, then `ipconfig /flushdns`
+
+### Why plain HTTP, not HTTPS
+
+`correll.tv` is a real domain, but these subdomains only resolve on your LAN — Let's
+Encrypt can't issue a normal certificate for a name it can't reach, and a self-signed
+cert would just bring back the "not secure" warning until every device trusted a
+custom root CA. Since the whole point here was zero extra setup per device, the
+`Caddyfile`'s `auto_https off` global option keeps Caddy from touching port 443 or
+attempting any TLS at all. If a browser's "HTTPS-first" mode tries `https://` before
+`http://`, it gets connection-refused (nothing is listening on 443) rather than a
+certificate warning, and falls back to plain HTTP automatically.
 
 ---
 
@@ -377,7 +396,7 @@ the record itself in Local DNS > DNS Records for a typo or missing entry.
 Often just that app's own login page, which can look surprising the first time. Confirm
 with a direct request bypassing browser cache:
 ```powershell
-Invoke-WebRequest -Uri http://localhost -Headers @{Host="sonarr"} -MaximumRedirection 0
+Invoke-WebRequest -Uri http://sonarr.correll.tv -MaximumRedirection 0
 ```
 Check the `Location` header in the error response — if it points to that same app's own
 `/login`, it's working correctly. If it points somewhere else entirely, that's an actual
