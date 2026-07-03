@@ -35,6 +35,7 @@ services:
       - "6881:6881/udp"
     volumes:
       - ${CONFIG_ROOT}/gluetun:/gluetun
+      - ${CONFIG_ROOT}/gluetun-tmp:/tmp/gluetun
     restart: unless-stopped
 
   qbittorrent:
@@ -60,11 +61,14 @@ services:
     depends_on:
       - gluetun
       - qbittorrent
+    volumes:
+      - ${CONFIG_ROOT}/gluetun-tmp:/tmp/gluetun
     environment:
       - QBITTORRENT_SERVER=localhost
       - QBITTORRENT_PORT=8080
       - QBITTORRENT_USER=${QBITTORRENT_USER}
       - QBITTORRENT_PASS=${QBITTORRENT_PASS}
+      - PORT_FORWARDED=/tmp/gluetun/forwarded_port
     restart: unless-stopped
 
   prowlarr:
