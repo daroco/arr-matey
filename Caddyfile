@@ -2,7 +2,7 @@
 	auto_https off
 }
 
-http://jellyseerr.correll.tv {
+http://jellyseerr.correll.tv, http://correll.tv {
 	reverse_proxy jellyseerr:5055
 }
 
