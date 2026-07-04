@@ -49,9 +49,16 @@ services:
       - PGID=${PGID:-1000}
       - TZ=${TZ:-UTC}
       - WEBUI_PORT=8080
+      - QBITTORRENT_USER=${QBITTORRENT_USER}
+      - QBITTORRENT_PASS=${QBITTORRENT_PASS}
+      - RATIO_CATEGORY=${RATIO_CATEGORY:-ratio}
+      - SEEDBOX_URL=${SEEDBOX_URL}
+      - SEEDBOX_USER=${SEEDBOX_USER}
+      - SEEDBOX_PASS=${SEEDBOX_PASS}
     volumes:
       - ${CONFIG_ROOT}/qbittorrent:/config
       - ${DOWNLOADS_PATH}:/downloads
+      - ./scripts:/scripts
     restart: unless-stopped
 
   qbittorrent-port-sync:

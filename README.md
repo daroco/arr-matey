@@ -3,11 +3,15 @@
 A Docker Compose stack that lets you request a movie or TV show and have it automatically
 searched, downloaded (behind a VPN), and dropped into your media library for Jellyfin.
 
-**Flow:** Jellyseerr (request) → Sonarr/Radarr (grab logic) → Prowlarr (indexer search,
+**Flow:** Seerr (request) → Sonarr/Radarr (grab logic) → Prowlarr (indexer search,
 with FlareSolverr for Cloudflare-protected sites) → qBittorrent behind Gluetun (VPN'd
 download, port-forwarded, auto-synced) → files land in your movies/TV folders → your
 existing host Jellyfin serves them → Bazarr backfills subtitles. Caddy fronts everything
 with clean local hostnames instead of `ip:port`.
+
+Seerr was Jellyseerr until the project merged with Overseerr and renamed itself — same
+app, same config/database, just a new image (`ghcr.io/seerr-team/seerr`) and container
+still named `jellyseerr` in this compose file for continuity.
 
 Jellyfin itself is **not** part of this stack — it's assumed to already be running on the
 host, untouched.
@@ -29,7 +33,7 @@ setup differs.
 | Sonarr | TV show search/grab/organize | 8989 | `sonarr.correll.tv` |
 | Radarr | Movie search/grab/organize | 7878 | `radarr.correll.tv` |
 | Bazarr | Subtitle fetching for Sonarr/Radarr libraries | 6767 | `bazarr.correll.tv` |
-| Jellyseerr | Request front-end — search a title, hit request, it flows to Sonarr/Radarr | 5055 | `jellyseerr.correll.tv` |
+| Seerr | Request front-end — search a title, hit request, it flows to Sonarr/Radarr | 5055 | `jellyseerr.correll.tv` |
 | Caddy | Reverse proxy — drops port numbers, gives every service above a clean hostname | 80 | `jellyfin.correll.tv` also routes here to the host install |
 
 Games are intentionally **not** included — there's no mature Sonarr/Radarr-equivalent for
@@ -142,7 +146,23 @@ beyond your network.
 **Trackers:** Tools > Options > BitTorrent > "Automatically add these trackers to new
 downloads" — paste in a maintained list, e.g. the `best` list from
 [ngosang/trackerslist](https://github.com/ngosang/trackerslist). Applies to new
-downloads only, not retroactively.
+downloads only, not retroactively. This list is never applied to private-tracker
+torrents — qBittorrent skips it automatically for anything flagged `private` in its
+metadata, so it can't conflict with a private tracker's own tracker-only rule.
+
+**Minimum Seeders:** if grabs keep landing on releases with almost no seeders, the fix
+isn't in qBittorrent — it's a per-indexer setting in Sonarr/Radarr. Settings > Indexers >
+edit an indexer > toggle "Show Advanced" (top right) > **Minimum Seeders** (default `1`,
+i.e. no real filtering). Raising it to `3`–`5` rejects thin swarms before they're ever
+grabbed. Has to be set per indexer.
+
+**Private tracker rules (e.g. DHT/PEX/LSD):** some private trackers require disabling
+DHT, PEX, and LSD (Options > BitTorrent > Peer Discovery) globally, even though
+compliant clients already skip all three automatically for any torrent flagged
+`private` — the blanket rule is usually about the tracker's own anti-cheat/DHT-crawling
+checks, not a real technical gap. It's a global toggle, not per-torrent, so disabling it
+also reduces peer discovery on your public-tracker downloads on whichever qBittorrent
+instance (home and/or seedbox) you apply it to. Check the specific tracker's rules page.
 
 ---
 
@@ -173,14 +193,14 @@ downloads only, not retroactively.
      `qbittorrent` (qBittorrent shares gluetun's network stack), port `8080`.
    - Settings > Media Management > Root Folders > add `/tv` (Sonarr) or `/movies`
      (Radarr) — these map to your host `TV_PATH`/`MOVIES_PATH`. This step also has to be
-     done before Jellyseerr's root folder dropdown will show anything.
+     done before Seerr's root folder dropdown will show anything.
    - Settings > Profiles — edit your quality profile to uncheck qualities you don't
      want (e.g. Bluray/Remux) and reorder the rest by preference.
 
 4. **Bazarr** (`:6767`): connect to Sonarr and Radarr the same way (hostname + API key),
    set subtitle languages/providers.
 
-5. **Jellyseerr** (`:5055`):
+5. **Seerr** (`:5055`):
    - Jellyfin URL: `http://host.docker.internal:8096` (Docker Desktop's special DNS name
      for reaching the host machine from inside a container)
    - External URL: your machine's actual LAN IP, e.g. `http://192.168.x.x:8096` — this is
@@ -203,7 +223,7 @@ they only resolve for devices using your Pi-hole):
 
 | Hostname | Routes to |
 |---|---|
-| `jellyseerr.correll.tv` | Jellyseerr |
+| `jellyseerr.correll.tv` | Seerr |
 | `jellyfin.correll.tv` | your host Jellyfin |
 | `qbt.correll.tv` | qBittorrent WebUI |
 | `prowlarr.correll.tv` | Prowlarr |
@@ -285,7 +305,7 @@ only via a private mesh instead of an open port is the safer default.
 
 **Port forward + real domain + Caddy TLS.** Forward port 443 on your router to Caddy,
 get a domain, Caddy auto-issues certs via Let's Encrypt. More convenient, meaningfully
-riskier — only worth doing for Jellyfin/Jellyseerr specifically, keep the *arr apps and
+riskier — only worth doing for Jellyfin/Seerr specifically, keep the *arr apps and
 qBittorrent reachable only from inside the network either way.
 
 ---
@@ -302,11 +322,46 @@ to `always`, which would restart even a deliberate stop.
 
 ## 9. Using it
 
-Search a title in Jellyseerr, hit **Request**. Track status on the **Requests** tab:
+Search a title in Seerr, hit **Request**. Track status on the **Requests** tab:
 Pending (not yet approved) → Processing (grabbed, downloading) → Partially Available
 → Available. Once something's fully downloaded, Jellyfin is the better place to actually
-browse your library — Jellyseerr's list is more useful for tracking things still in
+browse your library — Seerr's list is more useful for tracking things still in
 progress.
+
+---
+
+## 10. Seedbox cross-seeding for ratio maintenance (optional)
+
+If a private tracker requires maintaining upload ratio, this stack can automatically
+push a copy of specific downloads to an external seedbox to seed independently there —
+using the seedbox's bandwidth instead of your home connection, and without touching this
+stack's own download/import pipeline at all. Files aren't synced back; the seedbox
+fetches its own copy straight from the swarm.
+
+**How it works:** `scripts/cross-seed.sh` is mounted into the qBittorrent container and
+wired up as its "run external program on torrent completion" hook. On every completion
+it checks the torrent's category — only torrents in `RATIO_CATEGORY` (`.env`, default
+`ratio`) get exported via qBittorrent's own API and POSTed to the seedbox's `torrents/add`
+API. Everything else is skipped, so unrelated downloads never touch the seedbox.
+
+**Setup:**
+1. Fill in `.env`: `SEEDBOX_URL` (include scheme and any path prefix, e.g.
+   `https://host/qbittorrent`), `SEEDBOX_USER`, `SEEDBOX_PASS`. Some seedbox providers
+   put qBittorrent behind an nginx reverse proxy with its own HTTP Basic Auth and qBittorrent's
+   own login disabled entirely — if so, the same credentials typically cover both, and
+   the script only needs Basic Auth (see the script's comments).
+2. In Sonarr/Radarr, route only the tracker(s) you want cross-seeded into the `ratio`
+   category: Settings > Download Clients > add qBittorrent **again** with Category set
+   to `ratio` and a shared tag (e.g. `ratio-tracker`), then add that same tag to the
+   specific indexer(s) in Settings > Indexers. Grabs from tagged indexers route to the
+   tagged client automatically; everything else keeps using the original client/category.
+3. `docker compose up -d qbittorrent` to pick up `.env` changes.
+4. On the seedbox itself, set Options > BitTorrent > Share Ratio Limiting to whatever
+   ratio the tracker requires, action "Remove torrent and its files" — fully automatic
+   cleanup once ratio is met, no scripting needed for that half.
+
+Debugging: `docker exec qbittorrent cat /scripts/cross-seed.log` — every run logs a
+start/success/error line with the torrent hash.
 
 ---
 
@@ -325,6 +380,21 @@ Settings > Teleporter > download backup). If the container wasn't originally sta
 this compose file, `docker inspect <container> --format='{{.Config.Labels}}'` will show
 its actual compose project directory if one exists — run the update commands from there
 instead.
+
+**Note on `:latest` tags:** pulling `:latest` only resolves to whatever the maintainer
+had tagged `latest` *the moment you pull* — Docker never re-checks it on its own.
+Restarting or recreating a container reuses the already-pulled image; if it's been a
+while, `docker compose pull <service>` first or you may be running something far older
+than "latest" implies. `docker image inspect <image> --format '{{.Created}}'` shows when
+the image was actually built, not when you downloaded it — a useful gap check.
+
+**Seerr specifically** needed more than a routine image bump when it renamed from
+Jellyseerr (`fallenbagel/jellyseerr` → `ghcr.io/seerr-team/seerr`): the container now
+runs as non-root UID 1000, so its config folder needs `chown 1000:1000` first, and the
+compose service needs `init: true` added. Config/database migrate automatically on
+first start otherwise. Worth remembering in case a future rename/breaking-change pattern
+shows up again — check the project's own migration guide before assuming a plain image
+swap is enough.
 
 ---
 
@@ -375,9 +445,19 @@ blocks everything routing through it, including WebUI access, even though the co
 still shows "running." A full restart of both containers usually clears a stuck state
 after a settings change.
 
-**Jellyseerr's root folder dropdown is empty**
+**Seerr's root folder dropdown is empty**
 Sonarr/Radarr need a root folder configured first (Settings > Media Management > Root
-Folders) — Jellyseerr's dropdown just mirrors whatever exists there.
+Folders) — Seerr's dropdown just mirrors whatever exists there.
+
+**Grabbed torrents have almost no seeders/peers**
+Check, in order: (1) `docker logs gluetun` for a `port forwarded is <port>` line, and
+that `docker logs qbittorrent-port-sync` shows it syncing that port into qBittorrent —
+no forwarded port means no one can connect to you (see section 3). (2) qBittorrent's own
+tracker view (right-click a torrent > Trackers tab) — `status: Working` with real
+leecher counts but 0 seeds usually just means the swarm for that specific release is
+genuinely thin, not a config problem; try a different release/group. (3) Sonarr/Radarr's
+per-indexer **Minimum Seeders** (see section 4) — if it's still the default `1`, thin
+releases are getting grabbed instead of rejected.
 
 **A hostname works from other devices but not from the PC running the stack**
 Known Docker Desktop / Windows networking quirk looping a machine back to its own LAN
