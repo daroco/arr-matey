@@ -350,15 +350,45 @@ API. Everything else is skipped, so unrelated downloads never touch the seedbox.
    put qBittorrent behind an nginx reverse proxy with its own HTTP Basic Auth and qBittorrent's
    own login disabled entirely — if so, the same credentials typically cover both, and
    the script only needs Basic Auth (see the script's comments).
-2. In Sonarr/Radarr, route only the tracker(s) you want cross-seeded into the `ratio`
-   category: Settings > Download Clients > add qBittorrent **again** with Category set
-   to `ratio` and a shared tag (e.g. `ratio-tracker`), then add that same tag to the
-   specific indexer(s) in Settings > Indexers. Grabs from tagged indexers route to the
-   tagged client automatically; everything else keeps using the original client/category.
-3. `docker compose up -d qbittorrent` to pick up `.env` changes.
-4. On the seedbox itself, set Options > BitTorrent > Share Ratio Limiting to whatever
+2. In Sonarr/Radarr, add qBittorrent **again** as a second Download Client (Settings >
+   Download Clients), with Category set to `ratio`. Note its ID (visible in the edit
+   URL, or via `GET /api/v3/downloadclient`).
+3. Route the specific tracker's indexer to that client by setting **`downloadClientId`**
+   directly on the indexer — **not tags** (see warning below):
+   ```bash
+   curl -X PUT "http://localhost:8989/api/v3/indexer/<INDEXER_ID>" \
+     -H "X-Api-Key: <SONARR_API_KEY>" -H "Content-Type: application/json" \
+     --data-binary @- <<'EOF'
+   { ...full indexer object from GET, with "downloadClientId": <CLIENT_ID>... }
+   EOF
+   ```
+   (Radarr is identical, port `7878`.) Grabs from that indexer route to that client;
+   every other indexer keeps using the default.
+4. `docker compose up -d qbittorrent` to pick up `.env` changes.
+5. On the seedbox itself, set Options > BitTorrent > Share Ratio Limiting to whatever
    ratio the tracker requires, action "Remove torrent and its files" — fully automatic
    cleanup once ratio is met, no scripting needed for that half.
+
+**Do not use indexer Tags for this routing**, even though tag-based download-client
+selection exists and looks like the obvious way to do it — an indexer with *any* tag
+gets its releases **rejected outright** for any series/movie that doesn't share that
+tag (`IndexerTagSpecification` in Sonarr's decision engine). Since Seerr-created
+requests carry no tags by default, a tagged private-tracker indexer silently stops
+being searched for anything requested through Seerr — not "deprioritized," genuinely
+never searched. `downloadClientId` routes directly to one client with no such side
+effect. If you do use a tag anywhere in this setup, the download client's own tag list
+must also stay empty, or the tag-matching filter excludes it before the
+`downloadClientId` check ever runs, throwing `DownloadClientUnavailableException` on
+every grab.
+
+**qBittorrent's "Seeding Time Limiting" can silently override ratio-based seeding** —
+`max_ratio_act` is a *single shared action* for the ratio limit, seeding-time limit, and
+inactive-seeding-time limit; whichever fires first wins. A global seeding-time cap
+(check Options > BitTorrent > Seeding Limits) can stop a torrent — even one with its own
+per-torrent ratio target from `seedCriteria.seedRatio` — long before that ratio is
+actually reached. If ratio-based cross-seeding isn't holding torrents open as long as
+expected, check this isn't quietly capping seeding time first, on both the home
+instance and the seedbox.
 
 Debugging: `docker exec qbittorrent cat /scripts/cross-seed.log` — every run logs a
 start/success/error line with the torrent hash.
@@ -417,6 +447,15 @@ Check, in order: (1) Prowlarr actually has indexers added, (2) the Prowlarr → 
 Radarr "app" connection shows green not red (bad API key or wrong internal address are
 the usual culprits — use `http://sonarr:8989`, not `localhost`), (3) manually force
 **System > Tasks > App Indexer Sync** in Prowlarr rather than waiting.
+
+**Setting an indexer's Priority to 1 doesn't seem to make it get picked over others**
+Priority isn't a "prefer this indexer" setting — it's the *last* tiebreaker in Sonarr's
+decision engine, checked only after quality, Custom Format score, protocol preference,
+and episode matching are already tied between two releases. In practice those rarely
+tie, so priority rarely ends up being what decides anything. To actually prefer one
+indexer's releases over another's, use a **Custom Format** with an Indexer condition
+and a positive score — Custom Format Score is compared right after quality, so it
+reliably outranks competing releases the way priority usually doesn't.
 
 **Forgot Prowlarr's password**
 ```bash
