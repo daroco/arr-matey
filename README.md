@@ -352,7 +352,9 @@ API. Everything else is skipped, so unrelated downloads never touch the seedbox.
    the script only needs Basic Auth (see the script's comments).
 2. In Sonarr/Radarr, add qBittorrent **again** as a second Download Client (Settings >
    Download Clients), with Category set to `ratio`. Note its ID (visible in the edit
-   URL, or via `GET /api/v3/downloadclient`).
+   URL, or via `GET /api/v3/downloadclient`). **Set its Priority to a worse (higher)
+   number than the default client's** (e.g. `50` vs. the default `1`) — see warning
+   below for why this step isn't optional.
 3. Route the specific tracker's indexer to that client by setting **`downloadClientId`**
    directly on the indexer — **not tags** (see warning below):
    ```bash
@@ -380,6 +382,23 @@ effect. If you do use a tag anywhere in this setup, the download client's own ta
 must also stay empty, or the tag-matching filter excludes it before the
 `downloadClientId` check ever runs, throwing `DownloadClientUnavailableException` on
 every grab.
+
+**Two same-priority download clients silently round-robin every other grab between
+them** — this is the mistake that actually happened running this setup, not just a
+theoretical risk. `downloadClientId` on the indexer only short-circuits selection for
+*that* indexer; every other indexer with no override falls through to Sonarr/Radarr's
+normal client-selection logic, which groups all *equal-priority* clients together and
+load-balances across them (`DownloadClientProvider.GetDownloadClient` in Sonarr's
+source). Since the ratio client has to be untagged to avoid the tag-exclusion problem
+above, it ends up untagged *and* same-priority as the default client — meaning roughly
+half of everything grabbed from any other indexer randomly lands in the `ratio`
+category too, regardless of tracker, and gets needlessly pushed to the seedbox. Setting
+its Priority worse (step 2) removes it from that default pool entirely while leaving
+the indexer's direct `downloadClientId` routing completely unaffected. If this already
+happened before the priority fix went in, recategorize the wrongly-routed torrents back
+in qBittorrent — filter by category, check each one's `private` field (or tracker URL)
+to tell genuine private-tracker grabs apart from the misrouted ones, and bulk-set the
+correct category via `POST /api/v2/torrents/setCategory`.
 
 **qBittorrent's "Seeding Time Limiting" can silently override ratio-based seeding** —
 `max_ratio_act` is a *single shared action* for the ratio limit, seeding-time limit, and
