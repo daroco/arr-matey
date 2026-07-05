@@ -3,6 +3,8 @@
 A Docker Compose stack that lets you request a movie or TV show and have it automatically
 searched, downloaded, and dropped into your media library for Jellyfin.
 
+See `ARCHITECTURE.md` for diagrams of the pieces below and how they connect.
+
 **Flow:** Seerr (request) → Sonarr/Radarr (grab logic) → Prowlarr (indexer search,
 with FlareSolverr for Cloudflare-protected sites) → a remote seedbox does the actual
 torrenting (see section 9 — two separate clients there, qBittorrent for a private

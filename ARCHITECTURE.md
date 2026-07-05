@@ -1,0 +1,168 @@
+# Architecture diagrams
+
+Six diagrams covering the request-to-playback path, the seedbox's two-client split, the
+Caddy auth shim, the rclone sync/import pipeline, LAN hostname routing, and one protocol
+quirk (Transmission's RPC handshake) worth having a picture of. See `README.md` for the
+full write-up each of these summarizes.
+
+**Color key, used consistently below:** 🟧 private tracker path (qBittorrent, Hit & Run
+compliance) · 🟦 public tracker path (Transmission, peer discovery on).
+
+---
+
+## 1. Request to playback
+
+```mermaid
+flowchart LR
+    U["You, via Seerr"] --> SR[Seerr]
+    SR --> SO["Sonarr / Radarr"]
+    SO -->|search| PR[Prowlarr]
+    PR -->|"Cloudflare-gated indexers"| FS[FlareSolverr]
+    FS --> PR
+    PR -->|results| SO
+    SO -->|"grab: downloadClientId routes it"| DEC{Seedbox}
+    DEC -->|private tracker| QB[qBittorrent]
+    DEC -->|every other indexer| TR[Transmission]
+    QB -->|"finished file, SFTP"| RC["rclone sync"]
+    TR -->|"finished file, SFTP"| RC
+    RC -->|local staging folder| SO
+    SO -->|import + rename| LIB[("Movies / TV library")]
+    LIB --> JF[Jellyfin]
+    SO -.->|subtitles| BZ[Bazarr]
+
+    class QB private
+    class TR public
+    classDef private fill:#f6e4cf,stroke:#ad6b28,color:#4a3216,stroke-width:2px;
+    classDef public fill:#e4e8fb,stroke:#4b5fbd,color:#26305c,stroke-width:2px;
+```
+
+> Nothing downloads at home anymore — Sonarr/Radarr only decide *what* and *where*; the
+> seedbox does the actual torrenting for every indexer.
+
+---
+
+## 2. Why there are two seedbox clients
+
+```mermaid
+flowchart TD
+    IDX["Every indexer in Sonarr / Radarr"] --> DEC{downloadClientId}
+    DEC -->|"private tracker, Hit & Run"| QB[qBittorrent]
+    DEC -->|all public trackers| TR[Transmission]
+
+    subgraph QBP["qBittorrent instance"]
+        QB
+        QBS["DHT / PEX / LSD: off<br/>ratio 1.0 or 240h, Pause"]
+    end
+
+    subgraph TRP["Transmission instance"]
+        TR
+        TRS["DHT / PEX / LPD: on<br/>ratio 1.0 + idle-seed backstop"]
+    end
+
+    class QB,QBS private
+    class TR,TRS public
+    classDef private fill:#f6e4cf,stroke:#ad6b28,color:#4a3216,stroke-width:2px;
+    classDef public fill:#e4e8fb,stroke:#4b5fbd,color:#26305c,stroke-width:2px;
+```
+
+> DHT/PEX/LSD are per-*instance* settings in qBittorrent, not per-download-client-entry —
+> one client can't be "off" for one tracker and "on" for another. The private tracker's
+> rules require it globally off; public releases genuinely need it on for peer discovery.
+> Two real client processes resolve that; two Sonarr download-client entries pointing at
+> the same qBittorrent would not have.
+
+---
+
+## 3. The Caddy auth shim
+
+```mermaid
+sequenceDiagram
+    participant SO as Sonarr / Radarr
+    participant CA as Caddy (:8090, internal only)
+    participant SB as Seedbox reverse proxy
+    participant CL as qBittorrent / Transmission
+
+    SO->>CA: plain HTTP, no credentials
+    CA->>SB: HTTPS + Authorization: Basic ...
+    SB->>CL: authenticated request
+    CL-->>SB: response
+    SB-->>CA: response
+    CA-->>SO: response
+```
+
+> Neither Sonarr/Radarr's qBittorrent nor Transmission client type has a field for Basic
+> Auth separate from the client's own login — Caddy injects the header so neither app
+> needs credentials for the seedbox's proxy at all. One shim, shared by both clients,
+> since it proxies by host rather than by path.
+
+---
+
+## 4. Sync and import
+
+```mermaid
+flowchart LR
+    subgraph SBX[Seedbox]
+        QBD["qBittorrent save_path/ratio"]
+        TRD["Transmission download-dir"]
+    end
+    QBD -->|"SFTP, rclone sync --min-age 30s"| LQ["D:/downloads/seedbox"]
+    TRD -->|"SFTP, rclone sync --min-age 30s"| LT["D:/downloads/seedbox-transmission"]
+    LQ --> SO[Sonarr / Radarr]
+    LT --> SO
+    SO -->|Remote Path Mapping resolves folder| IMP["Import: move + rename"]
+    IMP --> LIB[("Movies / TV Shows")]
+
+    class QBD,LQ private
+    class TRD,LT public
+    classDef private fill:#f6e4cf,stroke:#ad6b28,color:#4a3216,stroke-width:2px;
+    classDef public fill:#e4e8fb,stroke:#4b5fbd,color:#26305c,stroke-width:2px;
+```
+
+> Runs on a hidden-window scheduled task, one client at a time. Each Remote Path Mapping
+> has to match its matching sync target exactly — including the category subfolder the
+> client appends on its own — or Sonarr/Radarr look for the file one directory level away
+> from where it actually lands.
+
+---
+
+## 5. LAN hostnames
+
+```mermaid
+flowchart TD
+    PH["Pi-hole: Local DNS records"] -.->|"resolves *.correll.tv"| DEV["Any device on the LAN"]
+    DEV -->|http://sonarr.correll.tv| CD["Caddy :80"]
+    DEV -->|http://radarr.correll.tv| CD
+    DEV -->|http://prowlarr.correll.tv| CD
+    DEV -->|http://bazarr.correll.tv| CD
+    DEV -->|http://jellyseerr.correll.tv| CD
+    DEV -->|http://jellyfin.correll.tv| CD
+    CD --> SO2["sonarr:8989"]
+    CD --> RA2["radarr:7878"]
+    CD --> PR2["prowlarr:9696"]
+    CD --> BZ2["bazarr:6767"]
+    CD --> JS2["jellyseerr:5055"]
+    CD --> JF2["host.docker.internal:8096"]
+```
+
+> A real registered TLD (`.tv`) is used instead of a made-up one so browsers actually
+> navigate to it instead of treating it as a search query — the Public Suffix List check
+> made-up TLDs tend to fail.
+
+---
+
+## 6. A protocol quirk worth having a picture of
+
+```mermaid
+sequenceDiagram
+    participant SO as Sonarr / Radarr
+    participant TR as Transmission RPC (site root: /rpc)
+    SO->>TR: POST /rpc (no session id)
+    TR-->>SO: 409 Conflict + X-Transmission-Session-Id
+    SO->>TR: POST /rpc (same body + session id header)
+    TR-->>SO: 200 OK
+```
+
+> Transmission's own web UI resolves its RPC endpoint relative to the *page's* URL, not
+> the JS file's — so the real endpoint sits at `/rpc`, not `/transmission/rpc` the way the
+> visible URL prefix suggests. This is why the Sonarr/Radarr client's UrlBase has to be
+> set empty rather than left at its documented default.
