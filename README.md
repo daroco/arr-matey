@@ -1,13 +1,22 @@
 # Self-Hosted Media Automation Stack
 
 A Docker Compose stack that lets you request a movie or TV show and have it automatically
-searched, downloaded (behind a VPN), and dropped into your media library for Jellyfin.
+searched, downloaded, and dropped into your media library for Jellyfin.
 
 **Flow:** Seerr (request) → Sonarr/Radarr (grab logic) → Prowlarr (indexer search,
-with FlareSolverr for Cloudflare-protected sites) → qBittorrent behind Gluetun (VPN'd
-download, port-forwarded, auto-synced) → files land in your movies/TV folders → your
-existing host Jellyfin serves them → Bazarr backfills subtitles. Caddy fronts everything
-with clean local hostnames instead of `ip:port`.
+with FlareSolverr for Cloudflare-protected sites) → a remote seedbox does the actual
+torrenting (see section 9 — two separate clients there, qBittorrent for a private
+Hit & Run tracker and Transmission for everything else, each with independent
+ratio/seed-time/DHT-PEX-LSD settings) → finished files sync back locally via a scheduled
+rclone job → files land in your movies/TV folders → your existing host Jellyfin serves
+them → Bazarr backfills subtitles. Caddy fronts everything with clean local hostnames
+instead of `ip:port`.
+
+There's no local torrent client or VPN in this stack — every indexer routes straight to
+the seedbox (section 9 covers why and how). If you'd rather download locally through a
+VPN'd qBittorrent instead, that's a materially different, simpler starting point than
+what this README documents; the historical shape of that setup (Gluetun, qBittorrent,
+port-forwarding sync) is still visible in git history if useful as a reference.
 
 Seerr was Jellyseerr until the project merged with Overseerr and renamed itself — same
 app, same config/database, just a new image (`ghcr.io/seerr-team/seerr`) and container
@@ -25,19 +34,19 @@ setup differs.
 
 | Service | Purpose | Port | LAN hostname (via Caddy) |
 |---|---|---|---|
-| Gluetun | VPN tunnel (ProtonVPN via WireGuard) with port forwarding | 8080 (shared with qBittorrent) | — |
-| qBittorrent | Download client | 8080 (via gluetun) | `qbt.correll.tv` |
-| qbittorrent-port-sync | Watches gluetun's forwarded port, pushes changes into qBittorrent automatically | — | — |
 | Prowlarr | Indexer aggregator — searches configured indexers, pushes results to Sonarr/Radarr | 9696 | `prowlarr.correll.tv` |
 | FlareSolverr | Solves Cloudflare challenges on Prowlarr's behalf for protected indexers | 8191 | — |
 | Sonarr | TV show search/grab/organize | 8989 | `sonarr.correll.tv` |
 | Radarr | Movie search/grab/organize | 7878 | `radarr.correll.tv` |
 | Bazarr | Subtitle fetching for Sonarr/Radarr libraries | 6767 | `bazarr.correll.tv` |
 | Seerr | Request front-end — search a title, hit request, it flows to Sonarr/Radarr | 5055 | `jellyseerr.correll.tv` |
-| Caddy | Reverse proxy — drops port numbers, gives every service above a clean hostname | 80 | `jellyfin.correll.tv` also routes here to the host install |
+| Caddy | Reverse proxy — drops port numbers, gives every service above a clean hostname, and (internal-only) injects Basic Auth for the seedbox | 80 | `jellyfin.correll.tv` also routes here to the host install |
+
+The actual torrent clients (qBittorrent and Transmission) run on the remote seedbox, not
+in this compose file — see section 9.
 
 Games are intentionally **not** included — there's no mature Sonarr/Radarr-equivalent for
-game libraries. Prowlarr's own search UI plus a manual qBittorrent grab works in the
+game libraries. Prowlarr's own search UI plus a manual grab on the seedbox works in the
 meantime.
 
 ---
@@ -46,11 +55,13 @@ meantime.
 
 - Docker Desktop, with the drive holding your media enabled under
   **Settings > Resources > File Sharing**
-- A VPN subscription with WireGuard support and port forwarding (this guide uses
-  ProtonVPN — Proton's port forwarding requires enabling **NAT-PMP** on their
-  WireGuard config page, and **Moderate NAT must be unchecked**, they're mutually exclusive)
+- A seedbox with qBittorrent and Transmission installable from its app catalog, SFTP
+  access (SSH shell access is *not* required — see section 9), and enough disk space
+  to hold in-flight downloads for every tracker you use
+- rclone installed on the host (`winget install Rclone.Rclone`) — used to sync finished
+  seedbox downloads down locally (section 9)
 - Pi-hole already running as your network's DNS resolver (used for the clean-hostname
-  setup in section 6)
+  setup in section 5)
 
 ---
 
@@ -66,13 +77,8 @@ Fill in:
   (e.g. `D:/movies`, `D:/TV Shows`, `D:/downloads`, `D:/appdata`). Keep `DOWNLOADS_PATH`
   on the **same drive** as your library folders — Sonarr/Radarr import by moving the
   finished file, and same-drive means an instant rename instead of a slow copy+delete.
-- `VPN_SERVICE_PROVIDER`, `WIREGUARD_PRIVATE_KEY`, `WIREGUARD_ADDRESSES` — from your VPN
-  provider's WireGuard config. For ProtonVPN: generate a WireGuard config from their
-  dashboard, open the `.conf` file, and copy just the value after `PrivateKey =` — the
-  same key works for any of their servers, you don't need the rest of the file.
-- `VPN_SERVER_COUNTRIES` — e.g. `Canada`
-- `QBITTORRENT_USER` / `QBITTORRENT_PASS` — the **permanent** WebUI login you set in
-  qBittorrent (not the temp startup password), used by `qbittorrent-port-sync`
+- `SEEDBOX_URL`/`USER`/`PASS`/`BASIC_AUTH` — see section 9 for how these get used
+  (Caddy shim + rclone remote).
 
 Create the host directories if they don't already exist, and point your existing Jellyfin
 install's libraries at the same `MOVIES_PATH`/`TV_PATH` folders — that's the only link
@@ -84,89 +90,21 @@ docker compose up -d
 
 ---
 
-## 3. Verify the VPN tunnel and port forwarding
-
-```bash
-docker logs gluetun
-```
-
-Confirm it reports a successful connection, then check the actual exit IP and country:
-
-```bash
-docker exec gluetun wget -qO- ipinfo.io/json
-```
-
-`country` should match what you set, and the IP should not match your real ISP address.
-
-Port forwarding (`VPN_PORT_FORWARDING=on`, `VPN_PORT_FORWARDING_PROVIDER=protonvpn`) is
-already set in the `gluetun` service — this matters because without a forwarded, open
-port, no peers can connect to you and downloads sit stuck on "Downloading metadata" or
-"Stalled." The `qbittorrent-port-sync` container handles keeping qBittorrent's listening
-port matched to whatever gluetun gets assigned, automatically, including when it changes
-after a reconnect. If a stalled/no-peers issue ever comes back, check
-`docker logs qbittorrent-port-sync` first — it logs every port it detects and pushes, so
-you can confirm whether it's syncing or silently failing (wrong password in `.env` is the
-usual cause of the latter).
-
-Manual check, if you ever need it:
-```bash
-docker exec gluetun cat /tmp/gluetun/forwarded_port
-```
-Compare against qBittorrent's **Tools > Options > Connection** listening port — should
-always match if the sync sidecar is running correctly.
-
----
-
-## 4. qBittorrent setup
-
-Open `localhost:8080` (or `http://qbittorrent` once section 6 is done).
-
-**Login:** Since qBittorrent 4.6.1+, there's no static default password. Get the
-temporary one from the logs:
-
-```bash
-docker logs qbittorrent
-```
-
-Look for: `The WebUI administrator password was not set. A temporary password is
-provided for this session: <password>`. Username is `admin`. Log in, then immediately
-go to **Tools > Options > WebUI** and set a permanent username/password — otherwise a
-new random password generates on every restart, and `qbittorrent-port-sync` will fail
-to authenticate.
-
-**Do not enable** "Bypass authentication for localhost" or "for subnet" under WebUI
-settings — the subnet bypass hands control to anyone on your LAN, and the localhost
-bypass is unreliable anyway once traffic is NAT'd through Docker Desktop's networking.
-
-**Host header validation** (same WebUI settings page): set to `*` (wildcard) so any
-hostname Caddy or the *arr apps present is accepted, rather than allowlisting each one
-individually. Fine for a home LAN; wouldn't recommend it if this were ever exposed
-beyond your network.
-
-**Trackers:** Tools > Options > BitTorrent > "Automatically add these trackers to new
-downloads" — paste in a maintained list, e.g. the `best` list from
-[ngosang/trackerslist](https://github.com/ngosang/trackerslist). Applies to new
-downloads only, not retroactively. This list is never applied to private-tracker
-torrents — qBittorrent skips it automatically for anything flagged `private` in its
-metadata, so it can't conflict with a private tracker's own tracker-only rule.
+## 3. Tuning Sonarr/Radarr's indexer behavior
 
 **Minimum Seeders:** if grabs keep landing on releases with almost no seeders, the fix
-isn't in qBittorrent — it's a per-indexer setting in Sonarr/Radarr. Settings > Indexers >
-edit an indexer > toggle "Show Advanced" (top right) > **Minimum Seeders** (default `1`,
-i.e. no real filtering). Raising it to `3`–`5` rejects thin swarms before they're ever
-grabbed. Has to be set per indexer.
+isn't in the download client — it's a per-indexer setting in Sonarr/Radarr. Settings >
+Indexers > edit an indexer > toggle "Show Advanced" (top right) > **Minimum Seeders**
+(default `1`, i.e. no real filtering). Raising it to `3`–`5` rejects thin swarms before
+they're ever grabbed. Has to be set per indexer.
 
-**Private tracker rules (e.g. DHT/PEX/LSD):** some private trackers require disabling
-DHT, PEX, and LSD (Options > BitTorrent > Peer Discovery) globally, even though
-compliant clients already skip all three automatically for any torrent flagged
-`private` — the blanket rule is usually about the tracker's own anti-cheat/DHT-crawling
-checks, not a real technical gap. It's a global toggle, not per-torrent, so disabling it
-also reduces peer discovery on your public-tracker downloads on whichever qBittorrent
-instance (home and/or seedbox) you apply it to. Check the specific tracker's rules page.
+Tracker-specific client settings (auto-add-trackers lists, DHT/PEX/LSD, ratio/seed-time
+policy) all live on the seedbox now, covered in depth in section 9 — there's no local
+client to configure here anymore.
 
 ---
 
-## 5. Wire the *arr apps together
+## 4. Wire the *arr apps together
 
 1. **Prowlarr** (`:9696`): add indexers under **Indexers > +**. Built-in list includes
    hundreds of public and private options — public need no account, private need an
@@ -189,13 +127,14 @@ instance (home and/or seedbox) you apply it to. Check the specific tracker's rul
    **System > Tasks > App Indexer Sync** if it doesn't appear right away.
 
 3. **Sonarr** (`:8989`) / **Radarr** (`:7878`):
-   - Settings > Download Clients > add qBittorrent — **host `gluetun`**, not
-     `qbittorrent` (qBittorrent shares gluetun's network stack), port `8080`.
    - Settings > Media Management > Root Folders > add `/tv` (Sonarr) or `/movies`
      (Radarr) — these map to your host `TV_PATH`/`MOVIES_PATH`. This step also has to be
      done before Seerr's root folder dropdown will show anything.
    - Settings > Profiles — edit your quality profile to uncheck qualities you don't
      want (e.g. Bluray/Remux) and reorder the rest by preference.
+   - **Download Clients**: set up in section 9, not here — every indexer needs an
+     explicit `downloadClientId` pointing at one of the two seedbox clients, which
+     requires the Caddy shim to exist first.
 
 4. **Bazarr** (`:6767`): connect to Sonarr and Radarr the same way (hostname + API key),
    set subtitle languages/providers.
@@ -214,7 +153,7 @@ together — every connection above needs its API key pasted in manually, once.
 
 ---
 
-## 6. LAN-wide access at clean hostnames (`*.correll.tv`)
+## 5. LAN-wide access at clean hostnames (`*.correll.tv`)
 
 Requires Pi-hole as your network's DNS. The `Caddyfile` in this repo has a route for
 every service, each on its own subdomain of `correll.tv` (a domain already owned,
@@ -225,11 +164,13 @@ they only resolve for devices using your Pi-hole):
 |---|---|
 | `jellyseerr.correll.tv` | Seerr |
 | `jellyfin.correll.tv` | your host Jellyfin |
-| `qbt.correll.tv` | qBittorrent WebUI |
 | `prowlarr.correll.tv` | Prowlarr |
 | `sonarr.correll.tv` | Sonarr |
 | `radarr.correll.tv` | Radarr |
 | `bazarr.correll.tv` | Bazarr |
+
+(qBittorrent/Transmission WebUIs live on the seedbox now, not on a local hostname —
+reach them at the seedbox's own URL directly, e.g. `https://your-seedbox/qbittorrent/`.)
 
 Using a real, publicly-registered TLD (`.tv`) instead of a made-up one matters here:
 browsers decide whether a typed address is a URL or a search query based on whether
@@ -271,7 +212,6 @@ other device), add hosts-file entries instead of relying on DNS for that one mac
    ```
    127.0.0.1 jellyseerr.correll.tv
    127.0.0.1 jellyfin.correll.tv
-   127.0.0.1 qbt.correll.tv
    127.0.0.1 prowlarr.correll.tv
    127.0.0.1 sonarr.correll.tv
    127.0.0.1 radarr.correll.tv
@@ -292,35 +232,39 @@ certificate warning, and falls back to plain HTTP automatically.
 
 ---
 
-## 7. Access outside your home network
+## 6. Access outside your home network
 
 Two options, different risk profiles:
 
 **Tailscale (recommended).** Private mesh VPN between your devices — nothing exposed to
 the public internet. Install on your PC and phone, same account on both, and your phone
 reaches the stack as if it were on your home WiFi from anywhere. None of these apps
-(Sonarr, Radarr, qBittorrent, Prowlarr) are built with "hostile public internet" as a
-threat model — several have had real CVEs over the years — so keeping them reachable
-only via a private mesh instead of an open port is the safer default.
+(Sonarr, Radarr, Prowlarr) are built with "hostile public internet" as a threat model —
+several have had real CVEs over the years — so keeping them reachable only via a private
+mesh instead of an open port is the safer default.
 
 **Port forward + real domain + Caddy TLS.** Forward port 443 on your router to Caddy,
 get a domain, Caddy auto-issues certs via Let's Encrypt. More convenient, meaningfully
-riskier — only worth doing for Jellyfin/Seerr specifically, keep the *arr apps and
-qBittorrent reachable only from inside the network either way.
+riskier — only worth doing for Jellyfin/Seerr specifically, keep the *arr apps reachable
+only from inside the network either way. The seedbox's own torrent clients are already
+reached over the internet directly (that's the nature of a seedbox) and have their own
+auth in front — not something this stack's network exposure affects either way.
 
 ---
 
-## 8. Start on machine boot
+## 7. Start on machine boot
 
 Docker Desktop > Settings > General > enable **"Start Docker Desktop when you log in."**
 Every service in this compose file has `restart: unless-stopped`, so containers come
 back up automatically once Docker Desktop launches — no compose changes needed.
 `unless-stopped` means "always restart unless a human explicitly stopped it," as opposed
-to `always`, which would restart even a deliberate stop.
+to `always`, which would restart even a deliberate stop. Also re-add the rclone sync
+scheduled task if it was ever removed — `Register-ScheduledTask` persists across
+reboots on its own, so this is normally a one-time setup, not something tied to Docker.
 
 ---
 
-## 9. Using it
+## 8. Using it
 
 Search a title in Seerr, hit **Request**. Track status on the **Requests** tab:
 Pending (not yet approved) → Processing (grabbed, downloading) → Partially Available
@@ -330,45 +274,53 @@ progress.
 
 ---
 
-## 10. Seedbox as primary downloader for a private tracker (optional)
+## 9. The seedbox: every tracker's actual downloader
 
-If a private tracker requires maintaining upload ratio, this stack can have the
-**seedbox do the actual downloading and seeding** for that tracker's content — using its
-bandwidth instead of home's — with finished files synced back locally afterward for
-Sonarr/Radarr to import. This replaced an earlier, simpler version of this feature that
-downloaded everything twice (locally *and* on the seedbox, just to mirror a copy for
-ratio) — worth knowing that history since some of the gotchas below stem directly from
-switching architectures mid-project.
+**Every indexer downloads and seeds on a remote seedbox, not locally.** Two separate
+client instances there split the work by tracker class:
 
-**Architecture:** Sonarr/Radarr's private-tracker indexer routes its grabs directly to a
-download client pointing at the seedbox (not local qBittorrent). Since the seedbox's
-qBittorrent sits behind an authenticating reverse proxy that Sonarr/Radarr's built-in
-qBittorrent client can't talk to directly, Caddy — already in this stack — sits in
-between as an auth-injecting shim. Once a file finishes downloading, a scheduled rclone
-sync pulls it down from the seedbox over SFTP; Sonarr/Radarr pick it up via Remote Path
-Mapping and import it normally. The seedbox keeps seeding independently the whole time,
-unaffected by whether or when the sync happens.
+- **qBittorrent** — the private Hit & Run tracker. DHT/PEX/LSD off (tracker rule), ratio
+  1.0 or the tracker's own seed-time requirement, whichever's sooner.
+- **Transmission** — every other (public) indexer. DHT/PEX/LPD **on** (public releases
+  often ship with few/weak tracker URLs and lean on these for peer discovery), its own
+  independent ratio + idle-seed-time policy.
+
+This started as a single-tracker setup (just qBittorrent, mirroring a local download for
+ratio) and evolved twice: first to make the seedbox the sole downloader instead of a
+mirror, then to add Transmission as a genuinely separate client instance once it became
+clear that qBittorrent's global DHT/PEX/LSD settings can't be split two ways on one
+instance — a single qBittorrent can't simultaneously satisfy "off for this tracker" and
+"on for peer discovery on everything else." Two real client processes, each with their
+own global settings, resolves that cleanly; a second Sonarr/Radarr *download client
+entry* pointing at the same instance would not have (qBittorrent's globals are
+per-instance, not per download-client-entry).
+
+Finished files sync down locally afterward via a scheduled rclone job; Sonarr/Radarr
+pick them up via Remote Path Mapping and import normally. Each seedbox client keeps
+seeding independently the whole time, unaffected by whether or when the sync happens.
 
 ### Why a Caddy shim, specifically
 
-The seedbox's qBittorrent WebUI is commonly placed behind a reverse proxy requiring HTTP
-Basic Auth, with qBittorrent's own login bypassed once Basic Auth passes (confirmed via
-`curl -u user:pass https://seedbox/qbittorrent/api/v2/app/version` succeeding with no
-separate qBittorrent-native login at all). Sonarr/Radarr's built-in qBittorrent
-download-client type has no field for a Basic Auth layer distinct from qBittorrent's own
-username/password (which get sent as a login POST body, not an `Authorization` header)
-— pointing Sonarr directly at a Basic-Auth-gated seedbox fails with a 401 before
-qBittorrent is ever reached. Rather than gamble on undocumented URL-embedded-credential
-behavior, Caddy reverse-proxies to the seedbox and injects the header itself, so
-Sonarr/Radarr just talk plain HTTP to `caddy:8090` on the internal Docker network — no
-credentials on the Sonarr/Radarr side at all.
+The seedbox's clients sit behind a reverse proxy requiring HTTP Basic Auth (confirmed:
+`curl -u user:pass https://seedbox/qbittorrent/api/v2/app/version` succeeds with no
+separate client-native login at all — same for Transmission's RPC). Neither
+Sonarr/Radarr's built-in qBittorrent nor Transmission download-client types have a field
+for a Basic Auth layer distinct from the client's own username/password (sent as a login
+body, not an `Authorization` header) — pointing Sonarr directly at the seedbox fails with
+a 401 before the client is ever reached. Rather than gamble on undocumented
+URL-embedded-credential behavior, Caddy reverse-proxies the *entire* seedbox host and
+injects the header itself, so Sonarr/Radarr just talk plain HTTP to `caddy:8090` — no
+credentials on the Sonarr/Radarr side at all. Because the shim proxies by host, not by
+path, **the same `:8090` shim works for both clients** — no per-client shim needed, it
+doesn't care whether the request is for `/qbittorrent/...` or Transmission's `/rpc`.
 
 ### Setup
 
 1. **`.env`**: fill in `SEEDBOX_URL`/`USER`/`PASS` (reference values, not read by any
    container directly) and `SEEDBOX_BASIC_AUTH` — `base64("user:pass")`, computed with
    `echo -n "user:pass" | base64`. This is the value Caddy actually injects.
-2. **Caddyfile**: an internal-only site, not published to the host —
+2. **Caddyfile**: one internal-only site, not published to the host, shared by both
+   clients —
    ```
    :8090 {
    	reverse_proxy https://your-seedbox-host {
@@ -379,46 +331,83 @@ credentials on the Sonarr/Radarr side at all.
    ```
    Add `environment: - SEEDBOX_BASIC_AUTH=${SEEDBOX_BASIC_AUTH}` to the `caddy` service
    in `compose.yaml` so Caddy can read it, then `docker compose up -d caddy`. Verify from
-   another container on the same network — `docker exec sonarr curl http://caddy:8090/qbittorrent/api/v2/app/version`
-   should return a version string with **no credentials** on the client side.
-3. **New download client** in Sonarr/Radarr (Settings > Download Clients > qBittorrent):
-   Host=`caddy`, Port=`8090`, UseSsl=off, UrlBase=`/qbittorrent`, username/password can
-   be dummy values (auth already happened at the shim). Category `ratio`. **Priority
-   worse than the default client's** (e.g. `50` vs. `1`) — see warning below, this isn't
-   optional.
-4. **Route the tracker's indexer** to this client via `downloadClientId` — **not tags**
+   another container on the same network:
+   ```bash
+   docker exec sonarr curl http://caddy:8090/qbittorrent/api/v2/app/version   # qBittorrent
+   docker exec sonarr curl -X POST http://caddy:8090/rpc -d '{"method":"session-get"}'  # Transmission
+   ```
+   Both should succeed with **no credentials** on the client side (Transmission's RPC
+   correctly returns `409` + a session-id header on the first call — that's its normal
+   handshake, not a failure; retry with `X-Transmission-Session-Id` set to see real data).
+3. **New download client per tracker class** in Sonarr/Radarr (Settings > Download
+   Clients):
+   - qBittorrent type: Host=`caddy`, Port=`8090`, UseSsl=off, UrlBase=`/qbittorrent`,
+     username/password dummy (auth already happened at the shim), Category `ratio`.
+   - Transmission type: Host=`caddy`, Port=`8090`, UseSsl=off, **UrlBase=`""` (empty)**
+     — Transmission's RPC lives at the site root (`/rpc`), *not* under `/transmission/`
+     the way the field's own default and help text suggest; leaving the default in place
+     causes a silent `405`, not an auth error, since Sonarr never actually reaches the
+     right path — username/password dummy, Category `public`.
+   - **Priority worse than whichever client ends up as the "default"** (e.g. `50`) on
+     every seedbox client — see warning below, this isn't optional, and applies
+     regardless of how many clients you have.
+4. **Route every indexer** to the matching client via `downloadClientId` — **not tags**
    (see warning below):
    ```bash
    curl -X PUT "http://localhost:8989/api/v3/indexer/<INDEXER_ID>" \
      -H "X-Api-Key: <SONARR_API_KEY>" -H "Content-Type: application/json" \
      --data-binary @- <<'EOF'
-   { ...full indexer object from GET, with "downloadClientId": <NEW_CLIENT_ID>... }
+   { ...full indexer object from GET, with "downloadClientId": <CLIENT_ID>... }
    EOF
    ```
-   (Radarr is identical, port `7878`.)
-5. **Remote Path Mapping** (Settings > Download Clients > Remote Path Mappings): Host=
-   `caddy`, Remote Path=the seedbox's actual `save_path` **including the category
-   subfolder** qBittorrent appends on its own for categorized downloads (check a real
-   torrent via `GET /api/v2/torrents/info` — don't guess it; e.g.
-   `/home/user/torrents/qbittorrent/ratio/`, not just `.../qbittorrent/`), Local Path=
-   `/downloads/seedbox/` (covered by the existing `${DOWNLOADS_PATH}:/downloads` mount →
-   `D:/downloads/seedbox` on the host — create this folder first, Sonarr/Radarr validate
-   it exists before accepting the mapping). Keep this in sync with whatever path the
-   rclone sync (step 7) actually targets — mismatching the two (e.g. syncing from the
-   category subfolder but mapping from its parent) means Sonarr/Radarr look for the file
-   one directory level away from where it actually lands locally.
-6. **Seedbox seeding policy** — ratio 1.0 **or** 7 days, whichever's sooner, via
-   `POST /qbittorrent/api/v2/app/setPreferences`: `max_ratio_enabled=true`,
-   `max_ratio=1`, `max_seeding_time_enabled=true`, `max_seeding_time=10080` (minutes).
-   **Action must be `max_ratio_act=0` (Pause) — not "Remove + delete files."** Sonarr
-   actively refuses to add a download client configured to auto-delete on its ratio
-   limit ("qBittorrent is configured to remove torrents when they reach their Share
-   Ratio Limit"), and this is a real safety catch: once Sonarr genuinely tracks the
-   seedbox as its download client, a delete-on-limit action races against the rclone
-   sync — the seedbox could delete a file before rclone ever copies it down, losing it
-   permanently. Pausing leaves the file in place; Sonarr's own "Remove completed
-   downloads" (already on for this client) cleans up the torrent *after* confirming a
-   successful import, not on qBittorrent's independent timeline.
+   (Radarr is identical, port `7878`.) Do this for **every** indexer, not just the
+   private tracker — an indexer with no override falls through to round-robin logic
+   (see warning below).
+5. **Remote Path Mapping per client** (Settings > Download Clients > Remote Path
+   Mappings): Host=`caddy` for both. Remote Path=that client's actual download directory
+   **including any category subfolder** the client appends on its own (check a real
+   torrent via the client's own API — don't guess it; qBittorrent nests categorized
+   downloads under `.../qbittorrent/<category>/`, confirmed via `GET /api/v2/torrents/info`;
+   Transmission's `download-dir` from `session-get` was the flat base directory with no
+   observed per-category nesting, but verify against a real grab rather than assume).
+   Local Path=a distinct staging folder per client (e.g. `/downloads/seedbox/` for
+   qBittorrent, `/downloads/seedbox-transmission/` for Transmission — both covered by the
+   existing `${DOWNLOADS_PATH}:/downloads` mount, create both folders first, Sonarr/Radarr
+   validate they exist before accepting the mapping). **Keep each mapping in sync with
+   whatever the rclone sync actually targets for that client** — mismatching the two
+   means Sonarr/Radarr look for the file one directory level away from where it lands.
+6. **Seeding policy, per client — this is the actual point of running two clients**:
+   - qBittorrent (private tracker): ratio 1.0 **or** the tracker's Hit & Run seed-time
+     requirement, whichever's sooner — check the tracker's *actual* rule rather than
+     assume a round number (240 hours / `14400` minutes for this tracker's rule).
+     `POST /qbittorrent/api/v2/app/setPreferences`: `max_ratio_enabled=true`,
+     `max_ratio=1`, `max_seeding_time_enabled=true`, `max_seeding_time=14400`.
+     **Action must be `max_ratio_act=0` (Pause) — not "Remove + delete files."** Sonarr
+     actively refuses to add a download client configured to auto-delete on its ratio
+     limit ("qBittorrent is configured to remove torrents when they reach their Share
+     Ratio Limit"), and this is a real safety catch: once Sonarr genuinely tracks a
+     client, a delete-on-limit action races the rclone sync — the client could delete a
+     file before rclone ever copies it down, losing it permanently. Pausing leaves the
+     file in place; Sonarr's own "Remove completed downloads" (already on) cleans up the
+     torrent *after* confirming a successful import, not on the client's own timeline.
+   - Transmission (public trackers, no real tracker obligation): a modest ratio + a
+     disk-hygiene time cap is reasonable, since there's nothing to comply with. Via the
+     JSON-RPC endpoint (`session-set`): `"seedRatioLimit": 1, "seedRatioLimited": true`
+     plus `"idle-seeding-limit": <minutes>, "idle-seeding-limit-enabled": true` as a
+     backstop. **Important semantic gap**: Transmission's (and Deluge's) idle-seed-time
+     limit means "stop after N minutes of *no* peer activity," not "stop after N minutes
+     total, active or not" the way qBittorrent's `max_seeding_time` works — a torrent
+     with any occasional trickle of activity never hits an idle limit no matter how long
+     it's been seeding in total. In practice this matters little here since ratio
+     resolves first for anything with real demand; it only means there's no hard ceiling
+     on a slow-but-not-dead public swarm the way there is on the private tracker.
+   - Enabling privacy settings on Transmission is a **JSON body**, not qBittorrent-style
+     query params:
+     ```bash
+     curl -u seedit4me:pass -X POST "https://seedbox/rpc" \
+       -H "X-Transmission-Session-Id: <id from the 409 handshake>" \
+       -d '{"method":"session-set","arguments":{"dht-enabled":true,"pex-enabled":true,"lpd-enabled":true}}'
+     ```
 7. **rclone**, over the seedbox's SFTP subsystem — works without SSH shell access, since
    SFTP is a distinct SSH subsystem that only does file operations, never arbitrary
    command execution (exactly why providers commonly disable shell access while leaving
@@ -426,10 +415,22 @@ credentials on the Sonarr/Radarr side at all.
    ```bash
    rclone config create seedbox sftp host=<seedbox-host> port=<sftp-port> user=<user> pass=<pass> --obscure
    ```
-   Scheduled (Windows Task Scheduler, every few minutes):
+   Scheduled (Windows Task Scheduler, every few minutes) — **don't point the task
+   directly at `rclone.exe`**: a Task Scheduler action running under an Interactive
+   logon (the default for a task created under your own user) flashes a visible console
+   window every time it fires, since rclone is a console app. Wrap it in a hidden VBScript
+   launcher instead, one `objShell.Run` call per client (each waits for the previous to
+   finish before starting, via the third `True` argument):
+   ```vbscript
+   ' rclone-sync-hidden.vbs
+   Set objShell = CreateObject("WScript.Shell")
+   cmdQb = """C:\path\to\rclone.exe"" sync ""seedbox:<qbt remote path>"" ""D:\downloads\seedbox"" --min-age 30s --log-file ""D:\appdata\rclone-sync.log"""
+   objShell.Run cmdQb, 0, True
+   cmdTr = """C:\path\to\rclone.exe"" sync ""seedbox:<transmission remote path>"" ""D:\downloads\seedbox-transmission"" --min-age 30s --log-file ""D:\appdata\rclone-sync-transmission.log"""
+   objShell.Run cmdTr, 0, True
    ```
-   rclone sync "seedbox:<remote save_path>" "D:\downloads\seedbox" --min-age 30s
-   ```
+   Task action: `wscript.exe "D:\appdata\rclone-sync-hidden.vbs"` — `wscript.exe` itself
+   has no console, and `Run`'s second argument (`0`) launches rclone hidden too.
    `--min-age 30s` skips files still being written remotely; rclone also writes to a
    `.partial` temp name and renames atomically on completion, which independently
    guards against Sonarr/Radarr importing a half-copied file.
@@ -440,46 +441,62 @@ credentials on the Sonarr/Radarr side at all.
 exists and looks like the obvious way to do it — an indexer with *any* tag gets its
 releases **rejected outright** for any series/movie that doesn't share that tag
 (`IndexerTagSpecification` in Sonarr's decision engine). Since Seerr-created requests
-carry no tags by default, a tagged private-tracker indexer silently stops being searched
-for anything requested through Seerr — not "deprioritized," genuinely never searched.
-`downloadClientId` routes directly to one client with no such side effect. If you do use
-a tag anywhere in this setup, the download client's own tag list must also stay empty,
-or the tag-matching filter excludes it before the `downloadClientId` check ever runs,
-throwing `DownloadClientUnavailableException` on every grab.
+carry no tags by default, a tagged indexer silently stops being searched for anything
+requested through Seerr — not "deprioritized," genuinely never searched. `downloadClientId`
+routes directly to one client with no such side effect. If you do use a tag anywhere in
+this setup, the download client's own tag list must also stay empty, or the tag-matching
+filter excludes it before the `downloadClientId` check ever runs, throwing
+`DownloadClientUnavailableException` on every grab.
 
 **Two same-priority download clients silently round-robin every other grab between
 them.** `downloadClientId` on the indexer only short-circuits selection for *that*
-indexer; every other indexer with no override falls through to Sonarr/Radarr's normal
+indexer; any indexer with no override falls through to Sonarr/Radarr's normal
 client-selection logic, which groups all *equal-priority* clients together and
 load-balances across them (`DownloadClientProvider.GetDownloadClient` in Sonarr's
-source). Since the seedbox client has to be untagged to avoid the tag-exclusion problem
-above, it ends up untagged *and* same-priority as the default client unless you
-explicitly set step 3's Priority worse — meaning roughly half of everything grabbed from
-any other indexer randomly lands on the seedbox too, regardless of tracker. If this
-already happened before the priority fix went in, recategorize the wrongly-routed
-torrents back in qBittorrent — filter by category, check each one's `private` field (or
-tracker URL) to tell genuine private-tracker grabs apart from the misrouted ones, and
-bulk-set the correct category via `POST /api/v2/torrents/setCategory`.
+source). Since seedbox clients have to be untagged to avoid the tag-exclusion problem
+above, they end up untagged *and* same-priority as each other unless you explicitly set
+worse priorities — meaning grabs from any indexer without an explicit override randomly
+land on whichever untagged client happens to win the round-robin. **Once every single
+indexer has an explicit `downloadClientId`, this concern mostly disappears in practice**
+(nothing is left to fall through) — but keep the priority difference anyway as a
+fail-safe for the next indexer you add and forget to route. If misrouting already
+happened before the priority fix went in, recategorize the wrongly-routed torrents —
+filter by category on the client that received them, check each one's `private` field
+(or tracker URL) to tell genuine grabs apart from the misrouted ones, and bulk-set the
+correct category via that client's API (`POST /api/v2/torrents/setCategory` for
+qBittorrent; Transmission has no native category concept, only the `tvCategory`/
+`movieCategory` Sonarr/Radarr fields, which don't retroactively apply to
+already-added torrents — move them by hand if this ever happens there).
 
 **qBittorrent's "Seeding Time Limiting" and ratio limit share one action setting** —
 `max_ratio_act` fires for whichever of ratio/seeding-time/inactive-seeding-time is met
-first; there's no way to configure a different action per limit type. This is what
-makes "ratio 1.0 or 7 days, whichever's sooner" a single native settings change (both
+first; there's no way to configure a different action per limit type. This is what makes
+"ratio 1.0 or a set seed-time, whichever's sooner" a single native settings change (both
 limits active, shared action) rather than something needing custom scripting — but it
 also means a stray seeding-time cap enabled elsewhere can silently override an intended
-ratio target, on both the home instance and the seedbox. Worth checking both if seeding
-durations look off from what you configured.
+ratio target. Worth checking if seeding durations look off from what you configured.
+Transmission has no equivalent shared-action constraint (ratio and idle-time are
+independent settings there), but see the idle-vs-absolute-time semantic gap above.
 
-**Point the initial rclone sync at the category subfolder specifically, not the
-seedbox's whole torrent directory** — syncing the parent path pulls down *everything*
-on the seedbox, including any unrelated content that predates this setup or that a
-seedbox provider's other users' torrents happen to share the same box (harmless
-security-wise, since it's your own account's SFTP root, but a real waste of local disk
-space and bandwidth for content that has nothing to do with this tracker). Scope the
+**Point the rclone sync at each client's category subfolder specifically, not its whole
+torrent directory** — syncing the parent path pulls down *everything* on that client,
+including any unrelated content that predates this setup (harmless security-wise, since
+it's your own account's SFTP root, but a real waste of local disk space and bandwidth
+for content that has nothing to do with what you're actually trying to sync). Scope the
 sync source to the exact category subfolder from the start, and make sure it matches
-whatever Remote Path Mapping (step 5) actually points at — the two have to describe the
-same remote location or Sonarr/Radarr look for the synced file one directory level away
-from where it actually lands.
+whatever Remote Path Mapping (step 5) actually points at for that same client — the two
+have to describe the same remote location or Sonarr/Radarr look for the synced file one
+directory level away from where it actually lands.
+
+**Transmission's stock web UI serves its RPC endpoint at the site root, not under its
+own path** — the UI's own JS defines the RPC URL as a *relative* `../rpc`, which resolves
+against the page's own URL (`/transmission/`), not the JS file's location, landing at
+`/rpc` site-wide rather than `/transmission/rpc`. Confirmed by testing both: `/transmission/rpc`
+returns a `405` (some other resource exists there, wrong method), while bare `/rpc`
+returns the expected `409` + session-id handshake. This is why Sonarr/Radarr's
+Transmission client needs `UrlBase=""` here rather than its documented default — worth
+re-checking with a live request rather than trusting the field's own help text if a
+different seedbox provider mounts things differently.
 
 ---
 
@@ -519,16 +536,23 @@ swap is enough.
 ## Troubleshooting
 
 **Downloads stuck on "Downloading metadata" or "Stalled"**
-Almost always means qBittorrent has no forwarded port, so no peers can connect to you —
-see section 3. `qbittorrent-port-sync` handles re-syncing this automatically; check its
-logs if this recurs to confirm it's actually keeping up.
+Check the seedbox client directly (qBittorrent or Transmission, whichever the indexer
+routed to — section 9) for a forwarded/open port; most seedbox providers forward ports
+automatically and it's rarely misconfigured on this end, but it's the first thing to
+rule out. Otherwise, this usually just means a genuinely thin swarm — see "Grabbed
+torrents have almost no seeders/peers" below.
 
-**Sonarr/Radarr: "Unable to connect to qBittorrent"**
-- Check **Tools > Options > Web UI > "Enable Host header validation"** in qBittorrent —
-  set to `*` (see section 4) or add `gluetun` to the allowed domains specifically.
-- Confirm you're using the current permanent password, not an old temp one.
-- Repeated failed logins can trigger qBittorrent's IP ban — restart the container to
-  clear it.
+**Sonarr/Radarr: "Unable to connect to qBittorrent" or "...to Transmission"**
+- Confirm the Caddy shim itself works first — from another container:
+  `docker exec sonarr curl http://caddy:8090/qbittorrent/api/v2/app/version` (or `/rpc`
+  for Transmission, expect a `409` + session-id, not a connection error). If this fails,
+  the problem is Caddy/the seedbox, not Sonarr/Radarr's client config.
+- Double check the Transmission client's **UrlBase is empty (`""`)**, not the field's
+  documented default (`/transmission/`) — see section 9's setup steps, this is the most
+  common cause of a Transmission-specific connection failure.
+- Confirm you're using the seedbox's current password, not an old/rotated one.
+- Repeated failed logins can trigger a client's own IP ban — restart the client on the
+  seedbox to clear it if logins start failing after working previously.
 
 **No indexers showing in Sonarr/Radarr**
 Check, in order: (1) Prowlarr actually has indexers added, (2) the Prowlarr → Sonarr/
@@ -566,29 +590,31 @@ Some indexers (1337x, kickasstorrents.to/.ws, and others) have open, unresolved
 compatibility bugs with how Prowlarr replays FlareSolverr's solved requests — not a
 config problem on your end. Swap to a different indexer.
 
-**qBittorrent WebUI suddenly returns an empty page**
-Check `docker logs gluetun` — if the VPN tunnel dropped, gluetun's kill-switch firewall
-blocks everything routing through it, including WebUI access, even though the container
-still shows "running." A full restart of both containers usually clears a stuck state
-after a settings change.
+**A seedbox client's WebUI suddenly returns an empty page or 502**
+That's the seedbox's own reverse proxy or the client process itself, not anything in
+this stack — check the seedbox provider's own status/panel, or restart the client from
+its app catalog. The Caddy shim just forwards whatever the seedbox returns; it has
+nothing to fix on this end.
 
 **Seerr's root folder dropdown is empty**
 Sonarr/Radarr need a root folder configured first (Settings > Media Management > Root
 Folders) — Seerr's dropdown just mirrors whatever exists there.
 
 **Grabbed torrents have almost no seeders/peers**
-Check, in order: (1) `docker logs gluetun` for a `port forwarded is <port>` line, and
-that `docker logs qbittorrent-port-sync` shows it syncing that port into qBittorrent —
-no forwarded port means no one can connect to you (see section 3). (2) qBittorrent's own
-tracker view (right-click a torrent > Trackers tab) — `status: Working` with real
-leecher counts but 0 seeds usually just means the swarm for that specific release is
-genuinely thin, not a config problem; try a different release/group. (3) Sonarr/Radarr's
-per-indexer **Minimum Seeders** (see section 4) — if it's still the default `1`, thin
-releases are getting grabbed instead of rejected.
+Check, in order: (1) On Transmission specifically, confirm `dht-enabled`/`pex-enabled`/
+`lpd-enabled` are actually on (section 9) — public releases often ship with few/weak
+tracker URLs and lean on these for peer discovery; if they got toggled off somehow,
+public-tracker grabs lose most of their discovery path. (2) the client's own tracker
+view (qBittorrent: right-click a torrent > Trackers tab; Transmission: torrent details
+> Trackers) — `status: Working` with real leecher counts but 0 seeds usually just means
+the swarm for that specific release is genuinely thin, not a config problem; try a
+different release/group. (3) Sonarr/Radarr's per-indexer **Minimum Seeders** (see
+section 3) — if it's still the default `1`, thin releases are getting grabbed instead of
+rejected.
 
 **A hostname works from other devices but not from the PC running the stack**
 Known Docker Desktop / Windows networking quirk looping a machine back to its own LAN
-IP unreliably. Use the hosts-file workaround in section 6 rather than chasing it further.
+IP unreliably. Use the hosts-file workaround in section 5 rather than chasing it further.
 
 **A hostname stopped resolving on all devices, including phones**
 Check, in order: (1) Pi-hole's Query Log — does the query even show up when you try to

@@ -10,10 +10,6 @@ http://jellyfin.correll.tv {
 	reverse_proxy host.docker.internal:8096
 }
 
-http://qbt.correll.tv {
-	reverse_proxy gluetun:8080
-}
-
 http://prowlarr.correll.tv {
 	reverse_proxy prowlarr:9696
 }
@@ -31,9 +27,12 @@ http://bazarr.correll.tv {
 }
 
 # Internal-only shim: injects the Basic Auth header the seedbox's own reverse
-# proxy requires, since Sonarr/Radarr's built-in qBittorrent client has no field
-# for a Basic Auth layer separate from qBittorrent's own username/password. Not
-# published to the host -- only reachable from other containers as caddy:8090.
+# proxy requires, since neither Sonarr/Radarr's built-in qBittorrent nor
+# Transmission clients have a field for a Basic Auth layer separate from their
+# own username/password. Proxies the whole seedbox host regardless of path, so
+# it works for both qBittorrent (/qbittorrent/...) and Transmission (/rpc) with
+# no per-client routing needed. Not published to the host -- only reachable
+# from other containers as caddy:8090.
 :8090 {
 	reverse_proxy https://79.nl73.seedit4.me {
 		header_up Host 79.nl73.seedit4.me

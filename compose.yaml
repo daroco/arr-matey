@@ -1,6 +1,15 @@
 # ---------------------------------------------------------------------------
-# Media automation stack: Prowlarr -> Sonarr/Radarr -> qBittorrent (via VPN)
-# Jellyseerr for requests, Bazarr for subs, Jellyfin for playback.
+# Media automation stack: Prowlarr -> Sonarr/Radarr -> seedbox (qBittorrent +
+# Transmission, remote) -> rclone sync -> Jellyseerr for requests, Bazarr for
+# subs, Jellyfin for playback.
+#
+# All torrent downloading happens on the remote seedbox now (see README section
+# 10) -- there is no local VPN'd download client in this stack anymore.
+# TorrentLeech routes to the seedbox's qBittorrent (ratio/H&R compliance,
+# DHT/PEX/LSD off); every other indexer routes to the seedbox's Transmission
+# (DHT/PEX/LSD on, for public-tracker peer discovery). Finished files sync
+# down locally via a scheduled rclone job for Sonarr/Radarr to import through
+# Remote Path Mapping.
 #
 # Layout assumed on host (adjust MEDIA_ROOT/CONFIG_ROOT in .env if not):
 #   ${DOWNLOADS_PATH}
@@ -10,68 +19,6 @@
 # ---------------------------------------------------------------------------
 
 services:
-
-  gluetun:
-    image: qmcgaw/gluetun:latest
-    container_name: gluetun
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    environment:
-      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER}
-      - VPN_TYPE=${VPN_TYPE:-wireguard}
-      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
-      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES}
-      - SERVER_COUNTRIES=${VPN_SERVER_COUNTRIES:-}
-      - VPN_PORT_FORWARDING=on
-      - VPN_PORT_FORWARDING_PROVIDER=protonvpn
-      - TZ=${TZ:-UTC}
-    ports:
-      # qBittorrent WebUI, exposed here since qbittorrent shares gluetun's network stack
-      - "8080:8080"
-      # qBittorrent torrent port (set the same value inside qBittorrent's settings)
-      - "6881:6881"
-      - "6881:6881/udp"
-    volumes:
-      - ${CONFIG_ROOT}/gluetun:/gluetun
-      - ${CONFIG_ROOT}/gluetun-tmp:/tmp/gluetun
-    restart: unless-stopped
-
-  qbittorrent:
-    image: lscr.io/linuxserver/qbittorrent:latest
-    container_name: qbittorrent
-    network_mode: "service:gluetun"
-    depends_on:
-      - gluetun
-    environment:
-      - PUID=${PUID:-1000}
-      - PGID=${PGID:-1000}
-      - TZ=${TZ:-UTC}
-      - WEBUI_PORT=8080
-      - QBITTORRENT_USER=${QBITTORRENT_USER}
-      - QBITTORRENT_PASS=${QBITTORRENT_PASS}
-    volumes:
-      - ${CONFIG_ROOT}/qbittorrent:/config
-      - ${DOWNLOADS_PATH}:/downloads
-    restart: unless-stopped
-
-  qbittorrent-port-sync:
-    image: snoringdragon/gluetun-qbittorrent-port-manager:latest
-    container_name: qbittorrent-port-sync
-    network_mode: "service:gluetun"
-    depends_on:
-      - gluetun
-      - qbittorrent
-    volumes:
-      - ${CONFIG_ROOT}/gluetun-tmp:/tmp/gluetun
-    environment:
-      - QBITTORRENT_SERVER=localhost
-      - QBITTORRENT_PORT=8080
-      - QBITTORRENT_USER=${QBITTORRENT_USER}
-      - QBITTORRENT_PASS=${QBITTORRENT_PASS}
-      - PORT_FORWARDED=/tmp/gluetun/forwarded_port
-    restart: unless-stopped
 
   prowlarr:
     image: lscr.io/linuxserver/prowlarr:latest
