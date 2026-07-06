@@ -4,17 +4,24 @@
 # subs, Jellyfin for playback.
 #
 # All torrent downloading happens on the remote seedbox now (see README section
-# 10) -- there is no local VPN'd download client in this stack anymore.
+# 9) -- there is no local VPN'd download client in this stack anymore.
 # TorrentLeech routes to the seedbox's qBittorrent (ratio/H&R compliance,
 # DHT/PEX/LSD off); every other indexer routes to the seedbox's Transmission
 # (DHT/PEX/LSD on, for public-tracker peer discovery). Finished files sync
 # down locally via a scheduled rclone job for Sonarr/Radarr to import through
 # Remote Path Mapping.
 #
+# movies/tv/downloads all live under ONE mounted parent (${MEDIA_ROOT}) rather
+# than three separate volumes, on purpose: hardlink imports (copyUsingHardlinks
+# in Sonarr/Radarr) can't cross a Docker bind-mount boundary, even when the
+# separate mounts point at the same physical drive. Splitting them back into
+# separate volumes silently breaks hardlinking again -- Sonarr/Radarr will
+# fall back to full copies with no error, doubling disk usage per import.
+#
 # Layout assumed on host (adjust MEDIA_ROOT/CONFIG_ROOT in .env if not):
-#   ${DOWNLOADS_PATH}
-#   ${MOVIES_PATH}
-#   ${TV_PATH}
+#   ${MEDIA_ROOT}/movies
+#   ${MEDIA_ROOT}/tv
+#   ${MEDIA_ROOT}/downloads
 #   ${CONFIG_ROOT}/<service>
 # ---------------------------------------------------------------------------
 
@@ -52,8 +59,7 @@ services:
       - TZ=${TZ:-UTC}
     volumes:
       - ${CONFIG_ROOT}/sonarr:/config
-      - ${TV_PATH}:/tv
-      - ${DOWNLOADS_PATH}:/downloads
+      - ${MEDIA_ROOT}:/media
     ports:
       - "8989:8989"
     restart: unless-stopped
@@ -67,8 +73,7 @@ services:
       - TZ=${TZ:-UTC}
     volumes:
       - ${CONFIG_ROOT}/radarr:/config
-      - ${MOVIES_PATH}:/movies
-      - ${DOWNLOADS_PATH}:/downloads
+      - ${MEDIA_ROOT}:/media
     ports:
       - "7878:7878"
     restart: unless-stopped
@@ -82,8 +87,7 @@ services:
       - TZ=${TZ:-UTC}
     volumes:
       - ${CONFIG_ROOT}/bazarr:/config
-      - ${MOVIES_PATH}:/movies
-      - ${TV_PATH}:/tv
+      - ${MEDIA_ROOT}:/media
     ports:
       - "6767:6767"
     restart: unless-stopped

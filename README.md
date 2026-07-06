@@ -75,15 +75,18 @@ cp .env.example .env
 
 Fill in:
 
-- `MOVIES_PATH`, `TV_PATH`, `DOWNLOADS_PATH`, `CONFIG_ROOT` — your actual host folders
-  (e.g. `D:/movies`, `D:/TV Shows`, `D:/downloads`, `D:/appdata`). Keep `DOWNLOADS_PATH`
-  on the **same drive** as your library folders — Sonarr/Radarr import by moving the
-  finished file, and same-drive means an instant rename instead of a slow copy+delete.
+- `MEDIA_ROOT`, `CONFIG_ROOT` — your actual host folders (e.g. `D:/media`, `D:/appdata`).
+  `MEDIA_ROOT` must contain `movies/`, `tv/`, and `downloads/` as subfolders of that
+  **one** directory — not three separate folders you point three separate env vars at.
+  This isn't just tidiness: Sonarr/Radarr's hardlink import (`copyUsingHardlinks`, on by
+  default) can only link across a single Docker bind mount. Split them into separate
+  mounts and hardlinking silently falls back to full copies — no error, just double disk
+  usage on every import (this bit us once; see the Warnings in section 9).
 - `SEEDBOX_URL`/`USER`/`PASS`/`BASIC_AUTH` — see section 9 for how these get used
   (Caddy shim + rclone remote).
 
 Create the host directories if they don't already exist, and point your existing Jellyfin
-install's libraries at the same `MOVIES_PATH`/`TV_PATH` folders — that's the only link
+install's libraries at `MEDIA_ROOT/movies` and `MEDIA_ROOT/tv` — that's the only link
 between this stack and Jellyfin.
 
 ```bash
@@ -129,9 +132,9 @@ client to configure here anymore.
    **System > Tasks > App Indexer Sync** if it doesn't appear right away.
 
 3. **Sonarr** (`:8989`) / **Radarr** (`:7878`):
-   - Settings > Media Management > Root Folders > add `/tv` (Sonarr) or `/movies`
-     (Radarr) — these map to your host `TV_PATH`/`MOVIES_PATH`. This step also has to be
-     done before Seerr's root folder dropdown will show anything.
+   - Settings > Media Management > Root Folders > add `/media/tv` (Sonarr) or
+     `/media/movies` (Radarr) — these map to your host `MEDIA_ROOT/tv`/`MEDIA_ROOT/movies`.
+     This step also has to be done before Seerr's root folder dropdown will show anything.
    - Settings > Profiles — edit your quality profile to uncheck qualities you don't
      want (e.g. Bluray/Remux) and reorder the rest by preference.
    - **Download Clients**: set up in section 9, not here — every indexer needs an
@@ -148,7 +151,7 @@ client to configure here anymore.
      just what gets displayed/linked to users, not used for the internal connection
    - Forgot Password URL: optional, safe to leave blank
    - Add Sonarr (`sonarr:8989`) and Radarr (`radarr:7878`) as request targets, API keys
-     again, root folders `/tv` and `/movies`
+     again, root folders `/media/tv` and `/media/movies`
 
 None of this wiring happens automatically just because the containers are networked
 together — every connection above needs its API key pasted in manually, once.
@@ -372,12 +375,12 @@ doesn't care whether the request is for `/qbittorrent/...` or Transmission's `/r
    downloads under `.../qbittorrent/<category>/`, confirmed via `GET /api/v2/torrents/info`;
    Transmission's `download-dir` from `session-get` was the flat base directory with no
    observed per-category nesting, but verify against a real grab rather than assume).
-   Local Path=a distinct staging folder per client (e.g. `/downloads/seedbox/` for
-   qBittorrent, `/downloads/seedbox-transmission/` for Transmission — both covered by the
-   existing `${DOWNLOADS_PATH}:/downloads` mount, create both folders first, Sonarr/Radarr
-   validate they exist before accepting the mapping). **Keep each mapping in sync with
-   whatever the rclone sync actually targets for that client** — mismatching the two
-   means Sonarr/Radarr look for the file one directory level away from where it lands.
+   Local Path=a distinct staging folder per client (e.g. `/media/downloads/seedbox/` for
+   qBittorrent, `/media/downloads/seedbox-transmission/` for Transmission — both covered
+   by the `${MEDIA_ROOT}:/media` mount, create both folders first, Sonarr/Radarr validate
+   they exist before accepting the mapping). **Keep each mapping in sync with whatever
+   the rclone sync actually targets for that client** — mismatching the two means
+   Sonarr/Radarr look for the file one directory level away from where it lands.
 6. **Seeding policy, per client — this is the actual point of running two clients**:
    - qBittorrent (private tracker): ratio 1.0 **or** the tracker's Hit & Run seed-time
      requirement, whichever's sooner — check the tracker's *actual* rule rather than
@@ -417,25 +420,35 @@ doesn't care whether the request is for `/qbittorrent/...` or Transmission's `/r
    ```bash
    rclone config create seedbox sftp host=<seedbox-host> port=<sftp-port> user=<user> pass=<pass> --obscure
    ```
-   Scheduled (Windows Task Scheduler, every few minutes) — **don't point the task
-   directly at `rclone.exe`**: a Task Scheduler action running under an Interactive
-   logon (the default for a task created under your own user) flashes a visible console
-   window every time it fires, since rclone is a console app. Wrap it in a hidden VBScript
-   launcher instead, one `objShell.Run` call per client (each waits for the previous to
-   finish before starting, via the third `True` argument):
-   ```vbscript
-   ' rclone-sync-hidden.vbs
-   Set objShell = CreateObject("WScript.Shell")
-   cmdQb = """C:\path\to\rclone.exe"" sync ""seedbox:<qbt remote path>"" ""D:\downloads\seedbox"" --min-age 30s --log-file ""D:\appdata\rclone-sync.log"""
-   objShell.Run cmdQb, 0, True
-   cmdTr = """C:\path\to\rclone.exe"" sync ""seedbox:<transmission remote path>"" ""D:\downloads\seedbox-transmission"" --min-age 30s --log-file ""D:\appdata\rclone-sync-transmission.log"""
-   objShell.Run cmdTr, 0, True
-   ```
-   Task action: `wscript.exe "D:\appdata\rclone-sync-hidden.vbs"` — `wscript.exe` itself
-   has no console, and `Run`'s second argument (`0`) launches rclone hidden too.
+   Scheduled (Windows Task Scheduler, every few minutes) via `scripts/rclone-sync.py`
+   (one `subprocess.run` call per client, sequential) — **don't point the task directly
+   at `rclone.exe`**: a Task Scheduler action running under an Interactive logon (the
+   default for a task created under your own user) flashes a visible console window
+   every time it fires, since rclone is a console app. Task action:
+   `pythonw.exe "C:\path\to\repo\scripts\rclone-sync.py"` — `pythonw.exe` has no console
+   of its own, so nothing flashes, and `subprocess.run(..., creationflags=CREATE_NO_WINDOW)`
+   keeps the child `rclone.exe` hidden too. All scheduled automation in this repo standardizes
+   on Python for this reason (see `scripts/seedbox-cleanup.py`) rather than mixing in
+   VBScript/PowerShell wrappers per script.
+   The sync destinations must live under the same `MEDIA_ROOT` as the movies/TV
+   folders — see the hardlink warning below for why.
    `--min-age 30s` skips files still being written remotely; rclone also writes to a
    `.partial` temp name and renames atomically on completion, which independently
    guards against Sonarr/Radarr importing a half-copied file.
+8. **Cleanup** (`scripts/seedbox-cleanup.py`, on its own 30-minute scheduled task via
+   `pythonw.exe`): deletes a
+   torrent on the seedbox only once it's both paused/stopped at its own ratio-or-time
+   target *and* confirmed already imported by Sonarr/Radarr (checked via history, not
+   guessed from local disk state). Deliberately **not** done via the client's own
+   "delete on limit" action — Sonarr refuses to add a client configured that way, and
+   even if it didn't, the seedbox could delete a file before rclone's next sync cycle
+   ever pulled it down, losing it permanently. Checking "already imported" first removes
+   that race, since the library's hardlinked copy is independent of whatever happens to
+   the seedbox/staging copies afterward. Only ever touches the seedbox itself — the
+   local staging mirror is left for the next rclone sync run to clean up on its own,
+   since `sync` already removes local files no longer present at the source. Logs to
+   `D:\appdata\seedbox-cleanup.log` (silent/no file if nothing currently qualifies); run
+   with `--dry-run` to preview without deleting anything.
 
 ### Warnings (all hit for real running this setup, not theoretical)
 
@@ -489,6 +502,22 @@ sync source to the exact category subfolder from the start, and make sure it mat
 whatever Remote Path Mapping (step 5) actually points at for that same client — the two
 have to describe the same remote location or Sonarr/Radarr look for the synced file one
 directory level away from where it actually lands.
+
+**Sonarr/Radarr's hardlink import silently degrades to a full copy if `movies`/`tv`/
+`downloads` aren't all subfolders of one single Docker volume mount.** `copyUsingHardlinks`
+is on by default and does exactly what it promises — *if* the source and destination are
+part of the same bind mount. Mount them as three separate `volumes:` entries instead
+(even pointing at three folders on the literal same physical drive), and Docker gives the
+container three separate mount points; a `link()` syscall can't cross that boundary, so
+Sonarr/Radarr catch the failure and quietly fall back to a full copy — no warning, no
+error, just double the disk usage on every single import, forever. This is exactly why
+this repo mounts one `${MEDIA_ROOT}:/media` volume with `movies/`, `tv/`, and
+`downloads/` as real subfolders underneath, rather than `${MOVIES_PATH}:/movies`,
+`${TV_PATH}:/tv`, `${DOWNLOADS_PATH}:/downloads` as separate mounts. Verify it's actually
+working, don't just trust the setting: `docker exec radarr stat -c '%d:%i' <a file under
+/media/downloads/...>` and the same file's path after import under `/media/movies/...` —
+matching inode numbers mean it's a real hardlink (one copy of the data, two names for it);
+different inodes mean it silently copied.
 
 **Transmission's stock web UI serves its RPC endpoint at the site root, not under its
 own path** — the UI's own JS defines the RPC URL as a *relative* `../rpc`, which resolves

@@ -105,12 +105,17 @@ flowchart LR
         QBD["qBittorrent save_path/ratio"]
         TRD["Transmission download-dir"]
     end
-    QBD -->|"SFTP, rclone sync --min-age 30s"| LQ["D:/downloads/seedbox"]
-    TRD -->|"SFTP, rclone sync --min-age 30s"| LT["D:/downloads/seedbox-transmission"]
+    subgraph MR["MEDIA_ROOT -- one Docker volume"]
+        LQ["media/downloads/seedbox"]
+        LT["media/downloads/seedbox-transmission"]
+        LIB[("media/movies, media/tv")]
+    end
+    QBD -->|"SFTP, rclone sync --min-age 30s"| LQ
+    TRD -->|"SFTP, rclone sync --min-age 30s"| LT
     LQ --> SO[Sonarr / Radarr]
     LT --> SO
-    SO -->|Remote Path Mapping resolves folder| IMP["Import: move + rename"]
-    IMP --> LIB[("Movies / TV Shows")]
+    SO -->|"Remote Path Mapping resolves folder"| IMP["Import: hardlink + rename"]
+    IMP --> LIB
 
     class QBD,LQ private
     class TRD,LT public
@@ -121,7 +126,17 @@ flowchart LR
 > Runs on a hidden-window scheduled task, one client at a time. Each Remote Path Mapping
 > has to match its matching sync target exactly — including the category subfolder the
 > client appends on its own — or Sonarr/Radarr look for the file one directory level away
-> from where it actually lands.
+> from where it actually lands. The downloads and library folders being subfolders of one
+> shared volume isn't cosmetic — it's what makes the import a real hardlink (one copy of
+> the data, two names) instead of a silent full duplicate; split them into separate Docker
+> mounts and hardlinking breaks with no error, just double disk usage.
+>
+> A separate scheduled script (`scripts/seedbox-cleanup.py`) closes the loop: once a
+> torrent is paused/stopped at its own seed target *and* confirmed imported (checked
+> against Sonarr/Radarr history, not guessed), it deletes the seedbox copy — never the
+> client's own "delete on limit," which races this same sync. The local staging mirror
+> isn't touched directly; it just disappears on the sync's next run once the remote
+> source is gone.
 
 ---
 
