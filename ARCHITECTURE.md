@@ -2,8 +2,14 @@
 
 Six diagrams covering the request-to-playback path, the seedbox's two-client split, the
 Caddy auth shim, the rclone sync/import pipeline, LAN hostname routing, and one protocol
-quirk (Transmission's RPC handshake) worth having a picture of. See `README.md` for the
-full write-up each of these summarizes.
+quirk (Transmission's RPC handshake) worth having a picture of, plus a seventh for the
+alternative `local` download mode. See `README.md` for the full write-up each of these
+summarizes.
+
+**Diagrams 1–6 are `seedbox` mode** (`DOWNLOAD_MODE=seedbox` in `.env`, the default).
+**Diagram 7 is `local` mode** (`DOWNLOAD_MODE=local`) — a simpler, seedbox-free
+alternative; see README's Local mode section. Only one mode is active in a given
+deployment.
 
 **Color key, used consistently below:** 🟧 private tracker path (qBittorrent, Hit & Run
 compliance) · 🟦 public tracker path (Transmission, peer discovery on).
@@ -181,3 +187,30 @@ sequenceDiagram
 > the JS file's — so the real endpoint sits at `/rpc`, not `/transmission/rpc` the way the
 > visible URL prefix suggests. This is why the Sonarr/Radarr client's UrlBase has to be
 > set empty rather than left at its documented default.
+
+---
+
+## 7. Local mode: no seedbox
+
+```mermaid
+flowchart LR
+    U["You, via Seerr"] --> SR[Seerr]
+    SR --> SO["Sonarr / Radarr"]
+    SO -->|search| PR[Prowlarr]
+    PR -->|"Cloudflare-gated indexers"| FS[FlareSolverr]
+    FS --> PR
+    PR -->|results| SO
+    SO -->|"grab: every indexer, same client"| QB["qBittorrent<br/>(this compose file)"]
+    QB -->|"writes directly into"| MR["media/downloads"]
+    MR --> SO
+    SO -->|import + hardlink| LIB[("media/movies, media/tv")]
+    LIB --> JF[Jellyfin]
+    SO -.->|subtitles| BZ[Bazarr]
+```
+
+> No rclone, no Remote Path Mapping, no dual-client split — qBittorrent runs in this
+> compose file and writes straight into the same `${MEDIA_ROOT}:/media` mount Sonarr/
+> Radarr already use, so import is a direct hardlink with no remote-to-local translation
+> step in between. The tradeoff for that simplicity: no VPN by default (public swarms see
+> your home IP) and no ratio/seed-time management (not suitable for most private
+> trackers) — see README's Local mode section.

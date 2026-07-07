@@ -2,28 +2,34 @@
 	auto_https off
 }
 
-http://jellyseerr.correll.tv, http://correll.tv {
+http://jellyseerr.{$DOMAIN}, http://{$DOMAIN} {
 	reverse_proxy jellyseerr:5055
 }
 
-http://watch.correll.tv {
+http://watch.{$DOMAIN} {
 	reverse_proxy host.docker.internal:8096
 }
 
-http://prowlarr.correll.tv {
+http://prowlarr.{$DOMAIN} {
 	reverse_proxy prowlarr:9696
 }
 
-http://sonarr.correll.tv {
+http://sonarr.{$DOMAIN} {
 	reverse_proxy sonarr:8989
 }
 
-http://radarr.correll.tv {
+http://radarr.{$DOMAIN} {
 	reverse_proxy radarr:7878
 }
 
-http://bazarr.correll.tv {
+http://bazarr.{$DOMAIN} {
 	reverse_proxy bazarr:6767
+}
+
+# Local-mode only -- harmless if the qbittorrent container isn't running
+# (COMPOSE_PROFILES doesn't include "local"), this route just won't connect.
+http://qbittorrent.{$DOMAIN} {
+	reverse_proxy qbittorrent:8080
 }
 
 # Internal-only shim: injects the Basic Auth header the seedbox's own reverse
@@ -32,10 +38,11 @@ http://bazarr.correll.tv {
 # own username/password. Proxies the whole seedbox host regardless of path, so
 # it works for both qBittorrent (/qbittorrent/...) and Transmission (/rpc) with
 # no per-client routing needed. Not published to the host -- only reachable
-# from other containers as caddy:8090.
+# from other containers as caddy:8090. Seedbox-mode only; inert (unreachable
+# from outside, harmless) in local mode.
 :8090 {
-	reverse_proxy https://79.nl73.seedit4.me {
-		header_up Host 79.nl73.seedit4.me
+	reverse_proxy https://{$SEEDBOX_HOST} {
+		header_up Host {$SEEDBOX_HOST}
 		header_up Authorization "Basic {$SEEDBOX_BASIC_AUTH}"
 	}
 }

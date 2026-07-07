@@ -6,19 +6,22 @@ searched, downloaded, and dropped into your media library for Jellyfin.
 See `ARCHITECTURE.md` for diagrams of the pieces below and how they connect.
 
 **Flow:** Seerr (request) → Sonarr/Radarr (grab logic) → Prowlarr (indexer search,
-with FlareSolverr for Cloudflare-protected sites) → a remote seedbox does the actual
-torrenting (see section 9 — two separate clients there, qBittorrent for a private
-Hit & Run tracker and Transmission for everything else, each with independent
-ratio/seed-time/DHT-PEX-LSD settings) → finished files sync back locally via a scheduled
-rclone job → files land in your movies/TV folders → your existing host Jellyfin serves
-them → Bazarr backfills subtitles. Caddy fronts everything with clean local hostnames
-instead of `ip:port`.
+with FlareSolverr for Cloudflare-protected sites) → a download client actually does the
+torrenting → finished files land in your movies/TV folders → your existing host Jellyfin
+serves them → Bazarr backfills subtitles. Caddy fronts everything with clean local
+hostnames instead of `ip:port`.
 
-There's no local torrent client or VPN in this stack — every indexer routes straight to
-the seedbox (section 9 covers why and how). If you'd rather download locally through a
-VPN'd qBittorrent instead, that's a materially different, simpler starting point than
-what this README documents; the historical shape of that setup (Gluetun, qBittorrent,
-port-forwarding sync) is still visible in git history if useful as a reference.
+**Two selectable download-client modes**, via `DOWNLOAD_MODE` in `.env`:
+- **`seedbox`** (default) — everything downloads on a remote seedbox: two separate
+  clients there, qBittorrent for a private Hit & Run tracker and Transmission for
+  everything else, each with independent ratio/seed-time/DHT-PEX-LSD settings, synced
+  back locally via a scheduled rclone job. Needs a seedbox subscription. See section 9.
+- **`local`** — a single qBittorrent container in this compose file does the actual
+  downloading, no seedbox needed, zero recurring cost. No VPN by default and no ratio
+  management — see the Local mode section after section 9.
+
+Run `python scripts/setup.py` for a guided setup (asks which mode, your domain, etc. and
+writes `.env` for you) instead of hand-editing `.env.example` — see section 2.
 
 Seerr was Jellyseerr until the project merged with Overseerr and renamed itself — same
 app, same config/database, just a new image (`ghcr.io/seerr-team/seerr`) and container
@@ -34,18 +37,24 @@ setup differs.
 
 ## Stack components
 
+`<domain>` below is whatever you set `DOMAIN` to in `.env` (your own domain, or a free
+`<lan-ip>.nip.io` — see section 2).
+
 | Service | Purpose | Port | LAN hostname (via Caddy) |
 |---|---|---|---|
-| Prowlarr | Indexer aggregator — searches configured indexers, pushes results to Sonarr/Radarr | 9696 | `prowlarr.correll.tv` |
+| Prowlarr | Indexer aggregator — searches configured indexers, pushes results to Sonarr/Radarr | 9696 | `prowlarr.<domain>` |
 | FlareSolverr | Solves Cloudflare challenges on Prowlarr's behalf for protected indexers | 8191 | — |
-| Sonarr | TV show search/grab/organize | 8989 | `sonarr.correll.tv` |
-| Radarr | Movie search/grab/organize | 7878 | `radarr.correll.tv` |
-| Bazarr | Subtitle fetching for Sonarr/Radarr libraries | 6767 | `bazarr.correll.tv` |
-| Seerr | Request front-end — search a title, hit request, it flows to Sonarr/Radarr | 5055 | `jellyseerr.correll.tv` |
-| Caddy | Reverse proxy — drops port numbers, gives every service above a clean hostname, and (internal-only) injects Basic Auth for the seedbox | 80 | `watch.correll.tv` also routes here to the host install |
+| Sonarr | TV show search/grab/organize | 8989 | `sonarr.<domain>` |
+| Radarr | Movie search/grab/organize | 7878 | `radarr.<domain>` |
+| Bazarr | Subtitle fetching for Sonarr/Radarr libraries | 6767 | `bazarr.<domain>` |
+| Seerr | Request front-end — search a title, hit request, it flows to Sonarr/Radarr | 5055 | `jellyseerr.<domain>` |
+| Caddy | Reverse proxy — drops port numbers, gives every service above a clean hostname, and (internal-only) injects Basic Auth for the seedbox | 80 | `watch.<domain>` also routes here to the host Jellyfin install |
+| qBittorrent | **`local` mode only** — the actual torrent client, no seedbox | 8080 | `qbittorrent.<domain>` |
 
-The actual torrent clients (qBittorrent and Transmission) run on the remote seedbox, not
-in this compose file — see section 9.
+In `seedbox` mode the actual torrent clients (qBittorrent and Transmission) run on the
+remote seedbox, not in this compose file — see section 9. In `local` mode, the
+`qbittorrent` row above is the download client (see the Local mode section after
+section 9).
 
 Games are intentionally **not** included — there's no mature Sonarr/Radarr-equivalent for
 game libraries. Prowlarr's own search UI plus a manual grab on the seedbox works in the
@@ -57,17 +66,34 @@ meantime.
 
 - Docker Desktop, with the drive holding your media enabled under
   **Settings > Resources > File Sharing**
-- A seedbox with qBittorrent and Transmission installable from its app catalog, SFTP
-  access (SSH shell access is *not* required — see section 9), and enough disk space
-  to hold in-flight downloads for every tracker you use
-- rclone installed on the host (`winget install Rclone.Rclone`) — used to sync finished
-  seedbox downloads down locally (section 9)
-- Pi-hole already running as your network's DNS resolver (used for the clean-hostname
-  setup in section 5)
+- Decide your `DOWNLOAD_MODE` (section 2) — this determines the rest of this list:
+  - **`seedbox`:** a seedbox with qBittorrent and Transmission installable from its app
+    catalog, SFTP access (SSH shell access is *not* required — see section 9), and
+    enough disk space to hold in-flight downloads for every tracker you use; rclone
+    installed on the host (`winget install Rclone.Rclone`) to sync finished seedbox
+    downloads down locally (section 9)
+  - **`local`:** nothing extra — the download client is a container in this stack (see
+    the Local mode section after section 9)
+- A domain of your own (or the free `<lan-ip>.nip.io` fallback, no signup needed — see
+  section 2) for clean hostnames instead of `ip:port`. Pi-hole (or another local DNS
+  resolver) is only needed if you want a real owned domain to resolve LAN-wide rather
+  than relying on nip.io or per-machine hosts-file entries — see section 5.
 
 ---
 
 ## 2. Initial setup
+
+**Recommended:** answer a few questions and let it write `.env` for you:
+
+```bash
+python scripts/setup.py
+```
+
+It asks for `MEDIA_ROOT`/`CONFIG_ROOT`, your domain (or offers a free `<lan-ip>.nip.io`
+if you don't have one), which `DOWNLOAD_MODE` you want, and the matching seedbox or
+local-qBittorrent details, then prints the exact next steps to run.
+
+**Or by hand:**
 
 ```bash
 cp .env.example .env
@@ -81,9 +107,16 @@ Fill in:
   This isn't just tidiness: Sonarr/Radarr's hardlink import (`copyUsingHardlinks`, on by
   default) can only link across a single Docker bind mount. Split them into separate
   mounts and hardlinking silently falls back to full copies — no error, just double disk
-  usage on every import (this bit us once; see the Warnings in section 9).
-- `SEEDBOX_URL`/`USER`/`PASS`/`BASIC_AUTH` — see section 9 for how these get used
-  (Caddy shim + rclone remote).
+  usage on every import (this bit us once; see the Warnings in section 9). This applies
+  whether you're in `seedbox` or `local` mode.
+- `DOWNLOAD_MODE` (`seedbox` or `local`) and matching `COMPOSE_PROFILES` (blank, or
+  `local`) — see the intro above for what differs. Keep the two in sync;
+  `scripts/provision.py` checks this itself and refuses to run if they disagree.
+- `DOMAIN` — your own domain (pointed at your LAN via Pi-hole, see section 5) or a free
+  `<lan-ip>.nip.io` if you don't have one.
+- **`seedbox` mode:** `SEEDBOX_URL`/`HOST`/`USER`/`PASS`/`BASIC_AUTH` — see section 9 for
+  how these get used (Caddy shim + rclone remote).
+- **`local` mode:** `QBT_CATEGORY` — see the Local mode section after section 9.
 
 Create the host directories if they don't already exist, and point your existing Jellyfin
 install's libraries at `MEDIA_ROOT/movies` and `MEDIA_ROOT/tv` — that's the only link
@@ -93,11 +126,16 @@ between this stack and Jellyfin.
 docker compose up -d
 ```
 
+If you're in `local` mode, do the one-time qBittorrent first-run step now (see the Local
+mode section after section 9) before continuing — `provision.py` needs to be able to
+reach it.
+
 Once every container has started **at least once** (so each app has generated its own
 config file/API key on disk), the rest of sections 4 and 9 — Prowlarr's connections to
-Sonarr/Radarr, both seedbox download clients, Remote Path Mappings, indexer routing,
-Bazarr's connections, Seerr's connections, and the seedbox's own qBittorrent/Transmission
-ratio and privacy settings — can be wired up in one shot instead of by hand:
+Sonarr/Radarr, the download client(s), indexer routing, Bazarr's connections, Seerr's
+connections, and (seedbox mode) Remote Path Mappings and the seedbox's own
+qBittorrent/Transmission ratio and privacy settings — can be wired up in one shot instead
+of by hand:
 
 ```bash
 pip install -r scripts/requirements.txt
@@ -128,8 +166,8 @@ Indexers > edit an indexer > toggle "Show Advanced" (top right) > **Minimum Seed
 they're ever grabbed. Has to be set per indexer.
 
 Tracker-specific client settings (auto-add-trackers lists, DHT/PEX/LSD, ratio/seed-time
-policy) all live on the seedbox now, covered in depth in section 9 — there's no local
-client to configure here anymore.
+policy) live on the download client itself, not here — section 9 for `seedbox` mode, the
+Local mode section (after section 9) for `local` mode.
 
 ---
 
@@ -161,9 +199,10 @@ client to configure here anymore.
      This step also has to be done before Seerr's root folder dropdown will show anything.
    - Settings > Profiles — edit your quality profile to uncheck qualities you don't
      want (e.g. Bluray/Remux) and reorder the rest by preference.
-   - **Download Clients**: set up in section 9, not here — every indexer needs an
-     explicit `downloadClientId` pointing at one of the two seedbox clients, which
-     requires the Caddy shim to exist first.
+   - **Download Clients**: set up in section 9 (`seedbox` mode) or the Local mode
+     section (`local` mode), not here — every indexer needs an explicit
+     `downloadClientId` pointing at the right client, which `provision.py` handles for
+     you either way.
 
 4. **Bazarr** (`:6767`): connect to Sonarr and Radarr the same way (hostname + API key),
    set subtitle languages/providers.
@@ -182,38 +221,47 @@ together — every connection above needs its API key pasted in manually, once.
 
 ---
 
-## 5. LAN-wide access at clean hostnames (`*.correll.tv`)
+## 5. LAN-wide access at clean hostnames (`*.<domain>`)
 
-Requires Pi-hole as your network's DNS. The `Caddyfile` in this repo has a route for
-every service, each on its own subdomain of `correll.tv` (a domain already owned,
-repurposed here for LAN-only names — these records are never published publicly,
-they only resolve for devices using your Pi-hole):
+The `Caddyfile` in this repo has a route for every service, each on its own subdomain of
+whatever you set `DOMAIN` to in `.env` — this stack's own reference deployment uses
+`correll.tv` (a domain already owned, repurposed for LAN-only names — these records are
+never published publicly), but any real domain you own works the same way, and so does
+the free `<lan-ip>.nip.io` fallback from section 2 if you don't have one:
 
 | Hostname | Routes to |
 |---|---|
-| `jellyseerr.correll.tv` | Seerr |
-| `watch.correll.tv` | your host Jellyfin |
-| `prowlarr.correll.tv` | Prowlarr |
-| `sonarr.correll.tv` | Sonarr |
-| `radarr.correll.tv` | Radarr |
-| `bazarr.correll.tv` | Bazarr |
+| `jellyseerr.<domain>` | Seerr |
+| `watch.<domain>` | your host Jellyfin |
+| `prowlarr.<domain>` | Prowlarr |
+| `sonarr.<domain>` | Sonarr |
+| `radarr.<domain>` | Radarr |
+| `bazarr.<domain>` | Bazarr |
+| `qbittorrent.<domain>` | qBittorrent (`local` mode only) |
 
-(qBittorrent/Transmission WebUIs live on the seedbox now, not on a local hostname —
-reach them at the seedbox's own URL directly, e.g. `https://your-seedbox/qbittorrent/`.)
+(**`seedbox` mode:** qBittorrent/Transmission WebUIs live on the seedbox, not on a local
+hostname — reach them at the seedbox's own URL directly, e.g.
+`https://your-seedbox/qbittorrent/`.)
 
-Using a real, publicly-registered TLD (`.tv`) instead of a made-up one matters here:
-browsers decide whether a typed address is a URL or a search query based on whether
-the suffix is a recognized domain — a fake TLD often gets treated as a search term
-instead of navigated to. A real TLD is always recognized, so these load as pages, not
-search results, with no extra configuration needed.
+Using a real, publicly-registered domain (or nip.io, which is also a real registered
+domain under the hood) instead of a made-up one matters here: browsers decide whether a
+typed address is a URL or a search query based on whether the suffix is a recognized
+domain — a fake TLD often gets treated as a search term instead of navigated to. A real
+one is always recognized, so these load as pages, not search results, with no extra
+configuration needed.
 
 This is plain HTTP, deliberately — see the note below on why HTTPS isn't in play here.
+
+**If you're using nip.io**, it already resolves to your LAN IP from anywhere with normal
+internet DNS — skip straight to step 4. **If you own a real domain and want it to
+resolve LAN-wide** (not just on this one PC), you need Pi-hole (or another local DNS
+resolver) as your network's DNS:
 
 1. **Point your router at Pi-hole.** On Google Wifi: Google Home app > Wifi > Settings
    (gear) > Advanced networking > DNS > Custom > set to your machine's LAN IP.
 2. **Add a local DNS record in Pi-hole for each hostname above** — admin UI > Local DNS >
    DNS Records — every one points at the same IP, your machine's LAN IP. This only
-   affects devices using your Pi-hole for DNS; it doesn't touch what `correll.tv`
+   affects devices using your Pi-hole for DNS; it doesn't touch what your domain
    resolves to for anyone outside your network.
 3. **Free up port 80 for Caddy.** Pi-hole's own admin UI often also defaults to port 80 —
    if so, remap it (e.g. `8081:80` instead of `80:80`) in Pi-hole's compose file and
@@ -222,12 +270,13 @@ This is plain HTTP, deliberately — see the note below on why HTTPS isn't in pl
    ```bash
    docker compose up -d caddy
    ```
-   or, if it's already running and you just changed the `Caddyfile`:
+   or, if it's already running and you just changed the `Caddyfile`/`.env`:
    ```bash
    docker compose restart caddy
    ```
-5. **Reserve your PC's LAN IP** in the Google Wifi app (Devices > your PC > reserve IP)
-   so the DNS records don't silently break if the router hands out a different address
+5. **Reserve your PC's LAN IP** (in your router's admin UI or the Google Wifi app:
+   Devices > your PC > reserve IP) so the DNS records — or a nip.io hostname baked
+   around that IP — don't silently break if the router hands out a different address
    later.
 
 **On the machine actually running the stack**, reaching its own LAN IP can be
@@ -237,24 +286,25 @@ other device), add hosts-file entries instead of relying on DNS for that one mac
 
 1. Open Notepad **as Administrator**
 2. Open `C:\Windows\System32\drivers\etc\hosts`
-3. Add one line per hostname, all pointing at loopback:
+3. Add one line per hostname (substituting your actual `DOMAIN`), all pointing at
+   loopback:
    ```
-   127.0.0.1 jellyseerr.correll.tv
-   127.0.0.1 watch.correll.tv
-   127.0.0.1 prowlarr.correll.tv
-   127.0.0.1 sonarr.correll.tv
-   127.0.0.1 radarr.correll.tv
-   127.0.0.1 bazarr.correll.tv
+   127.0.0.1 jellyseerr.<domain>
+   127.0.0.1 watch.<domain>
+   127.0.0.1 prowlarr.<domain>
+   127.0.0.1 sonarr.<domain>
+   127.0.0.1 radarr.<domain>
+   127.0.0.1 bazarr.<domain>
    ```
 4. Save, then `ipconfig /flushdns`
 
 ### Why plain HTTP, not HTTPS
 
-`correll.tv` is a real domain, but these subdomains only resolve on your LAN — Let's
-Encrypt can't issue a normal certificate for a name it can't reach, and a self-signed
-cert would just bring back the "not secure" warning until every device trusted a
-custom root CA. Since the whole point here was zero extra setup per device, the
-`Caddyfile`'s `auto_https off` global option keeps Caddy from touching port 443 or
+A real domain (or nip.io) is being used here, but these subdomains often only resolve on
+your LAN — Let's Encrypt can't issue a normal certificate for a name it can't reach, and
+a self-signed cert would just bring back the "not secure" warning until every device
+trusted a custom root CA. Since the whole point here was zero extra setup per device,
+the `Caddyfile`'s `auto_https off` global option keeps Caddy from touching port 443 or
 attempting any TLS at all. If a browser's "HTTPS-first" mode tries `https://` before
 `http://`, it gets connection-refused (nothing is listening on 443) rather than a
 certificate warning, and falls back to plain HTTP automatically.
@@ -304,6 +354,10 @@ progress.
 ---
 
 ## 9. The seedbox: every tracker's actual downloader
+
+**`seedbox` mode only** (`DOWNLOAD_MODE=seedbox` in `.env`) — if you're running
+`local` mode instead, skip to the Local mode section right after this one; none of the
+setup below applies to you.
 
 **Every indexer downloads and seeds on a remote seedbox, not locally.** Two separate
 client instances there split the work by tracker class:
@@ -558,6 +612,69 @@ different seedbox provider mounts things differently.
 
 ---
 
+## Local mode: local qBittorrent, no seedbox
+
+**`local` mode only** (`DOWNLOAD_MODE=local` + `COMPOSE_PROFILES=local` in `.env`) —
+if you're running `seedbox` mode, this doesn't apply to you; see section 9 instead.
+
+A single `qbittorrent` container (`compose.yaml`, gated behind the `local` Compose
+profile) does the actual downloading — no seedbox, no recurring cost, no private-tracker
+ratio obligation to manage. The tradeoff for that simplicity: **no VPN by default**, so
+public-tracker swarms see your home IP directly, and **no ratio/seed-time management**,
+so it's not suitable for most private trackers with a Hit & Run rule.
+
+### One-time first-run step (do this before running `provision.py`)
+
+The `linuxserver/qbittorrent` image **ignores** `QBT_USER`/`QBT_PASS` in `.env` at
+container start — it generates a random temporary password on first boot instead, and
+you have to set the real one yourself, matching what's in `.env` so `provision.py` can
+actually log in as Sonarr/Radarr's download client (real credentials, not an
+authentication bypass — qBittorrent's WebUI stays properly secured):
+
+1. `docker compose up -d` (if you haven't already)
+2. `docker logs qbittorrent` — find the line `A temporary password is provided for this
+   session: <password>`
+3. Log into `http://localhost:8080` as `admin` with that password
+4. **Set the permanent password to exactly what's in `.env`'s `QBT_PASS`** (whatever
+   `scripts/setup.py` had you choose, or whatever you put there by hand): Options > Web
+   UI > Authentication
+5. **Set Default Save Path to `/media/downloads`**: Options > Downloads — this is not
+   optional. The image's own default (`/downloads`) isn't under the `${MEDIA_ROOT}:/media`
+   mount, so Sonarr/Radarr couldn't hardlink (or even see) anything downloaded there —
+   the exact bug the whole hardlink migration (see the Warnings above) fixed for seedbox
+   mode, reproduced locally if this step is skipped.
+
+Then run `scripts/provision.py` as usual (section 2) — it configures one qBittorrent
+download client per app (`urlBase=""`, since this qBittorrent serves its WebUI/API at
+the root, unlike the seedbox's reverse-proxy-mounted `/qbittorrent` path — get this
+wrong and it's the same silent-connection-failure shape as the Transmission `UrlBase`
+gotcha in section 9), routes every indexer to it (no private/public split — that
+complexity in `seedbox` mode exists specifically for a ratio-obligated tracker sharing a
+box with public ones, and doesn't apply here), and still strips indexer tags (the
+tag-exclusion trap in section 9's Warnings applies regardless of mode).
+
+### Adding a VPN back
+
+If you want the privacy seedbox mode gets "for free" via being remote, layer Gluetun
+back on yourself — this stack had exactly that (Gluetun + qBittorrent sharing its
+network namespace + a port-forwarding sidecar) before the seedbox migration; see
+git commit `cabf8d4` (`git show cabf8d4:compose.yaml`) for the exact service
+definitions to adapt. Two things to update if you do: point `qbittorrent`'s volumes at
+`${MEDIA_ROOT}:/media` (not the old three-way `MOVIES_PATH`/`TV_PATH`/`DOWNLOADS_PATH`
+split that commit used — that's exactly what breaks hardlinking, see the Warnings
+above), and add your own VPN provider's credentials to `.env` (not automatable any more
+than seedbox credentials are — see `provision.py`'s own docstring for what it
+deliberately leaves manual).
+
+### What's not relevant in this mode
+
+`scripts/rclone-sync.py` and `scripts/seedbox-cleanup.py`'s scheduled tasks are
+seedbox-only — nothing in local mode needs syncing down or cleaning up remotely, since
+qBittorrent already writes straight into `${MEDIA_ROOT}/downloads`. Don't bother setting
+up their scheduled tasks in this mode.
+
+---
+
 ## Updating a container in place (e.g. Pi-hole)
 
 Config lives in mounted volumes, not the image, so updates are non-destructive:
@@ -704,7 +821,7 @@ the record itself in Local DNS > DNS Records for a typo or missing entry.
 Often just that app's own login page, which can look surprising the first time. Confirm
 with a direct request bypassing browser cache:
 ```powershell
-Invoke-WebRequest -Uri http://sonarr.correll.tv -MaximumRedirection 0
+Invoke-WebRequest -Uri http://sonarr.<domain> -MaximumRedirection 0
 ```
 Check the `Location` header in the error response — if it points to that same app's own
 `/login`, it's working correctly. If it points somewhere else entirely, that's an actual

@@ -62,13 +62,26 @@ class Config:
         env = dotenv_values(ENV_PATH)
         config_root = Path(env["CONFIG_ROOT"])
 
-        self.ratio_category = env.get("RATIO_CATEGORY", "ratio")
-        self.public_category = env.get("PUBLIC_CATEGORY", "public")
-        self.private_tracker_name = env.get("PRIVATE_TRACKER_NAME", "TorrentLeech")
-        self.private_seed_ratio = float(env.get("PRIVATE_TRACKER_SEED_RATIO", 1))
-        self.private_seed_time = int(env.get("PRIVATE_TRACKER_SEED_TIME_MINUTES", 14400))
-        self.seedbox_host = urllib.parse.urlparse(env["SEEDBOX_URL"]).netloc
-        self.seedbox_basic_auth = env["SEEDBOX_BASIC_AUTH"]
+        self.download_mode = env.get("DOWNLOAD_MODE", "seedbox")
+        self.compose_profiles = env.get("COMPOSE_PROFILES", "")
+
+        if self.download_mode == "seedbox":
+            # Only required in seedbox mode -- a local-mode .env can leave these
+            # blank entirely, so don't hard-index them (that would KeyError).
+            self.ratio_category = env.get("RATIO_CATEGORY", "ratio")
+            self.public_category = env.get("PUBLIC_CATEGORY", "public")
+            self.private_tracker_name = env.get("PRIVATE_TRACKER_NAME", "TorrentLeech")
+            self.private_seed_ratio = float(env.get("PRIVATE_TRACKER_SEED_RATIO", 1))
+            self.private_seed_time = int(env.get("PRIVATE_TRACKER_SEED_TIME_MINUTES", 14400))
+            self.seedbox_host = urllib.parse.urlparse(env.get("SEEDBOX_URL", "")).netloc
+            self.seedbox_basic_auth = env.get("SEEDBOX_BASIC_AUTH", "")
+        else:
+            # Local mode: one qBittorrent client, everything routes to it. Real
+            # credentials (set during the documented first-run step), not a bypass of
+            # qBittorrent's own auth -- see README's local-mode section.
+            self.qbt_category = env.get("QBT_CATEGORY", "downloads")
+            self.qbt_user = env.get("QBT_USER", "admin")
+            self.qbt_pass = env.get("QBT_PASS", "")
 
         self.sonarr_key = read_xml_api_key(config_root / "sonarr" / "config.xml")
         self.radarr_key = read_xml_api_key(config_root / "radarr" / "config.xml")
@@ -84,11 +97,35 @@ class Config:
         )
         self.seerr_key = seerr_settings["main"]["apiKey"]
 
-        self.sonarr_base = "http://localhost:8989"
-        self.radarr_base = "http://localhost:7878"
-        self.prowlarr_base = "http://localhost:9696"
-        self.bazarr_base = "http://localhost:6767"
-        self.seerr_base = "http://localhost:5055"
+        # Only needed to test against remapped ports/a non-default host; blank in
+        # .env means "use the normal default" for every app.
+        self.sonarr_base = env.get("SONARR_BASE_URL") or "http://localhost:8989"
+        self.radarr_base = env.get("RADARR_BASE_URL") or "http://localhost:7878"
+        self.prowlarr_base = env.get("PROWLARR_BASE_URL") or "http://localhost:9696"
+        self.bazarr_base = env.get("BAZARR_BASE_URL") or "http://localhost:6767"
+        self.seerr_base = env.get("SEERR_BASE_URL") or "http://localhost:5055"
+
+
+def check_download_mode_consistency(cfg):
+    """DOWNLOAD_MODE (drives this script's branching) and COMPOSE_PROFILES (the
+    separate, Compose-native switch that actually starts/stops the local qbittorrent
+    container) have to agree, or this script would either configure a download client
+    that isn't running, or leave a running one unconfigured."""
+    profiles = [p.strip() for p in cfg.compose_profiles.split(",") if p.strip()]
+    local_running = "local" in profiles
+    if cfg.download_mode == "local" and not local_running:
+        raise RuntimeError(
+            'DOWNLOAD_MODE=local but COMPOSE_PROFILES doesn\'t include "local" -- the '
+            "qbittorrent container isn't running. Set COMPOSE_PROFILES=local in .env "
+            "and `docker compose up -d` again before running this script."
+        )
+    if cfg.download_mode == "seedbox" and local_running:
+        raise RuntimeError(
+            'DOWNLOAD_MODE=seedbox but COMPOSE_PROFILES includes "local" -- the local '
+            "qbittorrent container is running but won't be configured. Either set "
+            "DOWNLOAD_MODE=local to use it, or remove \"local\" from COMPOSE_PROFILES "
+            "if you meant to use the seedbox."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +265,36 @@ def configure_remote_path_mapping(app, remote_path, local_path):
         log.info(f"created remote path mapping {remote_path} -> {local_path}")
 
 
-def configure_indexer_routing(cfg, app, private_client_id, public_client_id, attempts=3):
+def seedbox_router(cfg, private_client_id, public_client_id):
+    """Decider for seedbox mode: route the named private tracker to its own client
+    (with explicit seedCriteria, so it doesn't silently inherit whatever the client's
+    own global ratio/seed-time default happens to be), everything else to the other."""
+    def decide(idx):
+        # "" in anything is True in Python -- guard explicitly so a blank
+        # PRIVATE_TRACKER_NAME (no private tracker configured) routes everything
+        # to the public client instead of matching every indexer as "private".
+        is_private = bool(cfg.private_tracker_name) and cfg.private_tracker_name.lower() in idx["name"].lower()
+        target = private_client_id if is_private else public_client_id
+        seed_criteria = None
+        if is_private:
+            seed_criteria = {
+                "seedCriteria.seedRatio": cfg.private_seed_ratio,
+                "seedCriteria.seedTime": cfg.private_seed_time,
+            }
+        label = "private/qBittorrent" if is_private else "public/Transmission"
+        return target, seed_criteria, label
+    return decide
+
+
+def single_client_router(client_id, label="local qBittorrent"):
+    """Decider for local mode: every indexer routes to the one download client, no
+    ratio obligation to encode since there's no seedbox/tracker rule to satisfy here."""
+    def decide(idx):
+        return client_id, None, label
+    return decide
+
+
+def configure_indexer_routing(app, decide, attempts=3):
     """Prowlarr's own background Application Indexer Sync (triggered by touching its
     Applications connection, or on its own schedule) pushes indexer definitions into
     Sonarr/Radarr asynchronously -- it can still be settling even after Prowlarr's own
@@ -236,9 +302,13 @@ def configure_indexer_routing(cfg, app, private_client_id, public_client_id, att
     not that Sonarr/Radarr finished applying it. That push doesn't know about (and can
     silently clobber) the downloadClientId/seedCriteria fields this function sets. Rather
     than guess a delay that's long enough, re-check after a short pause and only stop
-    once a pass finds nothing left to change -- self-verifying instead of hoping."""
+    once a pass finds nothing left to change -- self-verifying instead of hoping.
+
+    `decide(idx) -> (target_client_id, seed_criteria_dict_or_None, label)` lets the same
+    retry/tag-stripping logic serve both seedbox mode's private/public split and local
+    mode's single-client routing -- see seedbox_router / single_client_router above."""
     for attempt in range(1, attempts + 1):
-        any_changed = _route_indexers_once(cfg, app, private_client_id, public_client_id)
+        any_changed = _route_indexers_once(app, decide)
         if not any_changed:
             return
         if attempt < attempts:
@@ -247,26 +317,21 @@ def configure_indexer_routing(cfg, app, private_client_id, public_client_id, att
                 "sync may still be settling, a follow-up run should confirm it's stable")
 
 
-def _route_indexers_once(cfg, app, private_client_id, public_client_id):
+def _route_indexers_once(app, decide):
     indexers = app("GET", "/api/v3/indexer")
     if not indexers:
         log.info("no indexers found yet -- add trackers in Prowlarr first, then re-run this script")
         return False
     any_changed = False
     for idx in indexers:
-        is_private = cfg.private_tracker_name.lower() in idx["name"].lower()
-        target = private_client_id if is_private else public_client_id
+        target, seed_criteria, label = decide(idx)
         changed = idx.get("downloadClientId") != target
         idx["downloadClientId"] = target
 
-        if is_private:
-            for field_name, desired in (
-                ("seedCriteria.seedRatio", cfg.private_seed_ratio),
-                ("seedCriteria.seedTime", cfg.private_seed_time),
-            ):
-                if get_field(idx["fields"], field_name) != desired:
-                    set_field(idx["fields"], field_name, desired)
-                    changed = True
+        for field_name, desired in (seed_criteria or {}).items():
+            if get_field(idx["fields"], field_name) != desired:
+                set_field(idx["fields"], field_name, desired)
+                changed = True
 
         # Tags on an indexer silently exclude untagged requests (IndexerTagSpecification --
         # a tagged indexer rejects releases for anything that doesn't share the tag, and
@@ -276,7 +341,6 @@ def _route_indexers_once(cfg, app, private_client_id, public_client_id):
             idx["tags"] = []
             changed = True
 
-        label = "private/qBittorrent" if is_private else "public/Transmission"
         if changed:
             app("PUT", f"/api/v3/indexer/{idx['id']}", json=idx)
             log.info(f"indexer '{idx['name']}' -> routed to {label} client")
@@ -321,6 +385,16 @@ def configure_bazarr(cfg):
 # ---------------------------------------------------------------------------
 # Seerr
 # ---------------------------------------------------------------------------
+
+def seerr_is_initialized(cfg):
+    """A brand new Seerr container hasn't been through its own setup wizard yet
+    (choosing a media server type, creating the first admin account) -- most of its
+    API rejects requests with a bare 403 until that's done, even with a valid API key.
+    /api/v1/settings/public needs no auth and exposes exactly this as `initialized`."""
+    r = requests.get(f"{cfg.seerr_base}/api/v1/settings/public", timeout=30)
+    r.raise_for_status()
+    return r.json().get("initialized", False)
+
 
 def configure_seerr_service(cfg, seerr, service, active_directory):
     existing_list = seerr("GET", f"/api/v1/settings/{service}")
@@ -440,23 +514,7 @@ def derive_transmission_remote_path(cfg):
 # main
 # ---------------------------------------------------------------------------
 
-def main():
-    cfg = Config()
-    sonarr = partial(api, cfg.sonarr_base, cfg.sonarr_key)
-    radarr = partial(api, cfg.radarr_base, cfg.radarr_key)
-    prowlarr = partial(api, cfg.prowlarr_base, cfg.prowlarr_key)
-    seerr = partial(api, cfg.seerr_base, cfg.seerr_key)
-
-    log.info("=== Prowlarr -> Sonarr/Radarr, FlareSolverr ===")
-    configure_prowlarr_application(prowlarr, "Sonarr", "http://sonarr:8989", cfg.sonarr_key)
-    configure_prowlarr_application(prowlarr, "Radarr", "http://radarr:7878", cfg.radarr_key)
-    configure_prowlarr_flaresolverr(prowlarr)
-    wait_for_prowlarr_sync(prowlarr)
-
-    log.info("=== Root folders ===")
-    configure_root_folder(sonarr, TV_ROOT)
-    configure_root_folder(radarr, MOVIES_ROOT)
-
+def provision_seedbox_mode(cfg, sonarr, radarr):
     log.info("=== Seedbox settings (qBittorrent private-tracker ratio, Transmission public) ===")
     configure_seedbox_qbittorrent(cfg)
     configure_seedbox_transmission(cfg)
@@ -492,17 +550,69 @@ def main():
     configure_remote_path_mapping(radarr, transmission_remote_path, TRANSMISSION_LOCAL_STAGING + "/")
 
     log.info("=== Indexer routing (Sonarr) ===")
-    configure_indexer_routing(cfg, sonarr, sonarr_qbt_id, sonarr_transmission_id)
+    configure_indexer_routing(sonarr, seedbox_router(cfg, sonarr_qbt_id, sonarr_transmission_id))
     log.info("=== Indexer routing (Radarr) ===")
-    configure_indexer_routing(cfg, radarr, radarr_qbt_id, radarr_transmission_id)
+    configure_indexer_routing(radarr, seedbox_router(cfg, radarr_qbt_id, radarr_transmission_id))
+
+
+def provision_local_mode(cfg, sonarr, radarr):
+    log.info("=== Download client (Sonarr) ===")
+    sonarr_qbt_id = configure_download_client(
+        sonarr, "QBittorrent", "qBittorrent", "tvCategory", cfg.qbt_category,
+        {"host": "qbittorrent", "port": 8080, "useSsl": False, "urlBase": "",
+         "username": cfg.qbt_user, "password": cfg.qbt_pass},
+    )
+
+    log.info("=== Download client (Radarr) ===")
+    radarr_qbt_id = configure_download_client(
+        radarr, "QBittorrent", "qBittorrent", "movieCategory", cfg.qbt_category,
+        {"host": "qbittorrent", "port": 8080, "useSsl": False, "urlBase": "",
+         "username": cfg.qbt_user, "password": cfg.qbt_pass},
+    )
+
+    log.info("=== Indexer routing (Sonarr) ===")
+    configure_indexer_routing(sonarr, single_client_router(sonarr_qbt_id))
+    log.info("=== Indexer routing (Radarr) ===")
+    configure_indexer_routing(radarr, single_client_router(radarr_qbt_id))
+
+
+def main():
+    cfg = Config()
+    check_download_mode_consistency(cfg)
+    sonarr = partial(api, cfg.sonarr_base, cfg.sonarr_key)
+    radarr = partial(api, cfg.radarr_base, cfg.radarr_key)
+    prowlarr = partial(api, cfg.prowlarr_base, cfg.prowlarr_key)
+    seerr = partial(api, cfg.seerr_base, cfg.seerr_key)
+
+    log.info(f"=== Mode: {cfg.download_mode} ===")
+
+    log.info("=== Prowlarr -> Sonarr/Radarr, FlareSolverr ===")
+    configure_prowlarr_application(prowlarr, "Sonarr", "http://sonarr:8989", cfg.sonarr_key)
+    configure_prowlarr_application(prowlarr, "Radarr", "http://radarr:7878", cfg.radarr_key)
+    configure_prowlarr_flaresolverr(prowlarr)
+    wait_for_prowlarr_sync(prowlarr)
+
+    log.info("=== Root folders ===")
+    configure_root_folder(sonarr, TV_ROOT)
+    configure_root_folder(radarr, MOVIES_ROOT)
+
+    if cfg.download_mode == "seedbox":
+        provision_seedbox_mode(cfg, sonarr, radarr)
+    else:
+        provision_local_mode(cfg, sonarr, radarr)
 
     log.info("=== Bazarr ===")
     configure_bazarr(cfg)
 
     log.info("=== Seerr ===")
-    configure_seerr_service(cfg, seerr, "sonarr", TV_ROOT)
-    configure_seerr_service(cfg, seerr, "radarr", MOVIES_ROOT)
-    check_seerr_jellyfin(seerr)
+    if seerr_is_initialized(cfg):
+        configure_seerr_service(cfg, seerr, "sonarr", TV_ROOT)
+        configure_seerr_service(cfg, seerr, "radarr", MOVIES_ROOT)
+        check_seerr_jellyfin(seerr)
+    else:
+        log.warning("[Seerr] hasn't been through its own setup wizard yet (create the "
+                    "first admin account, pick a media server) -- open http://localhost:5055, "
+                    "complete that, then re-run this script to finish wiring it up")
 
     log.info("=== Done ===")
 

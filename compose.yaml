@@ -1,22 +1,26 @@
 # ---------------------------------------------------------------------------
-# Media automation stack: Prowlarr -> Sonarr/Radarr -> seedbox (qBittorrent +
-# Transmission, remote) -> rclone sync -> Jellyseerr for requests, Bazarr for
-# subs, Jellyfin for playback.
+# Media automation stack: Prowlarr -> Sonarr/Radarr -> a download client ->
+# Jellyseerr for requests, Bazarr for subs, Jellyfin for playback.
 #
-# All torrent downloading happens on the remote seedbox now (see README section
-# 9) -- there is no local VPN'd download client in this stack anymore.
-# TorrentLeech routes to the seedbox's qBittorrent (ratio/H&R compliance,
-# DHT/PEX/LSD off); every other indexer routes to the seedbox's Transmission
-# (DHT/PEX/LSD on, for public-tracker peer discovery). Finished files sync
-# down locally via a scheduled rclone job for Sonarr/Radarr to import through
-# Remote Path Mapping.
+# Two selectable download-client architectures, via DOWNLOAD_MODE in .env:
+#   seedbox (default): everything downloads on a remote seedbox (qBittorrent +
+#     Transmission there), synced back locally via rclone. See README section 9.
+#   local: the qbittorrent service below does the actual downloading, no
+#     seedbox needed -- gated behind the "local" Compose profile (activated by
+#     setting COMPOSE_PROFILES=local in .env; scripts/setup.py does this for
+#     you). No VPN by default and no ratio management -- see README's
+#     local-mode section.
+# DOWNLOAD_MODE only drives scripts/provision.py's API wiring; COMPOSE_PROFILES
+# is the separate, Compose-native switch that actually starts/stops the local
+# qbittorrent container. Keep them in sync -- provision.py checks this itself.
 #
 # movies/tv/downloads all live under ONE mounted parent (${MEDIA_ROOT}) rather
 # than three separate volumes, on purpose: hardlink imports (copyUsingHardlinks
 # in Sonarr/Radarr) can't cross a Docker bind-mount boundary, even when the
 # separate mounts point at the same physical drive. Splitting them back into
 # separate volumes silently breaks hardlinking again -- Sonarr/Radarr will
-# fall back to full copies with no error, doubling disk usage per import.
+# fall back to full copies with no error, doubling disk usage per import. This
+# applies to the local qbittorrent service below too, not just seedbox mode.
 #
 # Layout assumed on host (adjust MEDIA_ROOT/CONFIG_ROOT in .env if not):
 #   ${MEDIA_ROOT}/movies
@@ -92,6 +96,32 @@ services:
       - "6767:6767"
     restart: unless-stopped
 
+  # Local-mode only (see the header note above) -- inert/not started unless
+  # COMPOSE_PROFILES includes "local". No VPN, no VPN-based port forwarding:
+  # this is the zero-cost-of-entry path, not the private/hardened one. See
+  # README's local-mode section for the required one-time first-run step
+  # (qBittorrent ignores QBITTORRENT_USER/PASS env vars entirely -- it
+  # generates a random temp password on first boot instead) and for how to
+  # layer Gluetun (VPN) back on if you want it.
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    profiles:
+      - local
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      - WEBUI_PORT=8080
+    volumes:
+      - ${CONFIG_ROOT}/qbittorrent:/config
+      - ${MEDIA_ROOT}:/media
+    ports:
+      - "8080:8080"
+      - "6881:6881"
+      - "6881:6881/udp"
+    restart: unless-stopped
+
   jellyseerr:
     image: ghcr.io/seerr-team/seerr:latest
     container_name: jellyseerr
@@ -115,6 +145,8 @@ services:
     ports:
       - "80:80"
     environment:
+      - DOMAIN=${DOMAIN}
+      - SEEDBOX_HOST=${SEEDBOX_HOST}
       - SEEDBOX_BASIC_AUTH=${SEEDBOX_BASIC_AUTH}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
