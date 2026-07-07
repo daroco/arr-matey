@@ -631,6 +631,23 @@ nothing to fix on this end.
 Sonarr/Radarr need a root folder configured first (Settings > Media Management > Root
 Folders) — Seerr's dropdown just mirrors whatever exists there.
 
+**New requests fail immediately, Sonarr/Radarr logs show `Root folder '/tv' does not
+exist` or `Root folder '/movies' does not exist`**
+Seerr keeps its **own separate copy** of which root folder to send new requests to
+(Settings > Services > Sonarr/Radarr > root folder) — it does not read this live from
+Sonarr/Radarr each time. If you ever change Sonarr/Radarr's root folder path (e.g. the
+`MEDIA_ROOT` migration in section 9), Seerr's copy goes stale silently: existing
+requests and already-imported media are unaffected, but **every new request fails**
+with this exact validation error, since Seerr is still telling Sonarr/Radarr to use a
+path that no longer exists. Fix via Seerr's Settings UI, or directly:
+```bash
+curl -X PUT "http://localhost:5055/api/v1/settings/sonarr/0" -H "X-Api-Key: <SEERR_API_KEY>" \
+  -H "Content-Type: application/json" -d '{...full object from GET, "activeDirectory": "/media/tv"...}'
+```
+(Radarr identical, `/settings/radarr/0`, `/media/movies`.) Any requests that already
+failed this way stay failed — retry them individually via
+`POST /api/v1/request/<id>/retry` once the setting's fixed, they don't self-heal.
+
 **Grabbed torrents have almost no seeders/peers**
 Check, in order: (1) On Transmission specifically, confirm `dht-enabled`/`pex-enabled`/
 `lpd-enabled` are actually on (section 9) — public releases often ship with few/weak
