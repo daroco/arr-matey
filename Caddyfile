@@ -6,7 +6,7 @@ http://jellyseerr.correll.tv, http://correll.tv {
 	reverse_proxy jellyseerr:5055
 }
 
-http://jellyfin.correll.tv {
+http://watch.correll.tv {
 	reverse_proxy host.docker.internal:8096
 }
 
