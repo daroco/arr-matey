@@ -93,6 +93,30 @@ between this stack and Jellyfin.
 docker compose up -d
 ```
 
+Once every container has started **at least once** (so each app has generated its own
+config file/API key on disk), the rest of sections 4 and 9 — Prowlarr's connections to
+Sonarr/Radarr, both seedbox download clients, Remote Path Mappings, indexer routing,
+Bazarr's connections, Seerr's connections, and the seedbox's own qBittorrent/Transmission
+ratio and privacy settings — can be wired up in one shot instead of by hand:
+
+```bash
+pip install -r scripts/requirements.txt
+python scripts/provision.py
+```
+
+It's idempotent (safe to re-run any time — after recreating a container wipes a download
+client, after rotating the seedbox password, whatever) and self-verifying rather than
+destructive: everything is create-if-missing or set-to-desired-state, and it re-checks
+indexer routing until it actually observes a stable result rather than trusting a single
+pass (touching Prowlarr's Applications connection reliably kicks off a background sync
+that briefly overwrites Sonarr/Radarr-side fields the script just set — expected, and it
+self-heals within the same run). It deliberately does **not** touch three things that
+need your own credentials or judgment: adding actual indexer/tracker accounts to
+Prowlarr, Seerr's initial Jellyfin connection (needs Jellyfin admin login), and tagging
+specific Cloudflare-protected indexers with the FlareSolverr proxy it creates. Read
+sections 4 and 9 below regardless if you want to understand *what* it's doing and why —
+the script is that same wiring encoded, not a black box.
+
 ---
 
 ## 3. Tuning Sonarr/Radarr's indexer behavior
