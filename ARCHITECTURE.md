@@ -150,7 +150,7 @@ flowchart TD
     DEV -->|http://prowlarr.correll.tv| CD
     DEV -->|http://bazarr.correll.tv| CD
     DEV -->|http://jellyseerr.correll.tv| CD
-    DEV -->|http://jellyfin.correll.tv| CD
+    DEV -->|http://watch.correll.tv| CD
     CD --> SO2["sonarr:8989"]
     CD --> RA2["radarr:7878"]
     CD --> PR2["prowlarr:9696"]

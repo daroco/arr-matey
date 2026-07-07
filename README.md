@@ -42,7 +42,7 @@ setup differs.
 | Radarr | Movie search/grab/organize | 7878 | `radarr.correll.tv` |
 | Bazarr | Subtitle fetching for Sonarr/Radarr libraries | 6767 | `bazarr.correll.tv` |
 | Seerr | Request front-end — search a title, hit request, it flows to Sonarr/Radarr | 5055 | `jellyseerr.correll.tv` |
-| Caddy | Reverse proxy — drops port numbers, gives every service above a clean hostname, and (internal-only) injects Basic Auth for the seedbox | 80 | `jellyfin.correll.tv` also routes here to the host install |
+| Caddy | Reverse proxy — drops port numbers, gives every service above a clean hostname, and (internal-only) injects Basic Auth for the seedbox | 80 | `watch.correll.tv` also routes here to the host install |
 
 The actual torrent clients (qBittorrent and Transmission) run on the remote seedbox, not
 in this compose file — see section 9.
@@ -168,7 +168,7 @@ they only resolve for devices using your Pi-hole):
 | Hostname | Routes to |
 |---|---|
 | `jellyseerr.correll.tv` | Seerr |
-| `jellyfin.correll.tv` | your host Jellyfin |
+| `watch.correll.tv` | your host Jellyfin |
 | `prowlarr.correll.tv` | Prowlarr |
 | `sonarr.correll.tv` | Sonarr |
 | `radarr.correll.tv` | Radarr |
@@ -216,7 +216,7 @@ other device), add hosts-file entries instead of relying on DNS for that one mac
 3. Add one line per hostname, all pointing at loopback:
    ```
    127.0.0.1 jellyseerr.correll.tv
-   127.0.0.1 jellyfin.correll.tv
+   127.0.0.1 watch.correll.tv
    127.0.0.1 prowlarr.correll.tv
    127.0.0.1 sonarr.correll.tv
    127.0.0.1 radarr.correll.tv
@@ -419,7 +419,10 @@ doesn't care whether the request is for `/qbittorrent/...` or Transmission's `/r
    SFTP enabled). One-time setup:
    ```bash
    rclone config create seedbox sftp host=<seedbox-host> port=<sftp-port> user=<user> pass=<pass> --obscure
+   pip install -r scripts/requirements.txt
    ```
+   (`requests` and `python-dotenv` — used by `scripts/seedbox-cleanup.py`; install into
+   whichever Python environment `pythonw.exe`/the scheduled tasks actually run under.)
    Scheduled (Windows Task Scheduler, every few minutes) via `scripts/rclone-sync.py`
    (one `subprocess.run` call per client, sequential) — **don't point the task directly
    at `rclone.exe`**: a Task Scheduler action running under an Interactive logon (the
