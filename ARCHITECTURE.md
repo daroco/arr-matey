@@ -212,5 +212,6 @@ flowchart LR
 > compose file and writes straight into the same `${MEDIA_ROOT}:/media` mount Sonarr/
 > Radarr already use, so import is a direct hardlink with no remote-to-local translation
 > step in between. The tradeoff for that simplicity: no VPN by default (public swarms see
-> your home IP) and no ratio/seed-time management (not suitable for most private
-> trackers) — see README's Local mode section.
+> your home IP — optionally fixable by layering `compose.vpn.yml` on top, which routes
+> this same qBittorrent through Gluetun instead) and no ratio/seed-time management (not
+> suitable for most private trackers) — see README's Local mode section.

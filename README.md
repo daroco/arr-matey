@@ -73,7 +73,8 @@ meantime.
     installed on the host (`winget install Rclone.Rclone`) to sync finished seedbox
     downloads down locally (section 9)
   - **`local`:** nothing extra — the download client is a container in this stack (see
-    the Local mode section after section 9)
+    the Local mode section after section 9). Optionally, a VPN provider with a
+    WireGuard config if you want one (`compose.vpn.yml`, same section) — not required.
 - A domain of your own (or the free `<lan-ip>.nip.io` fallback, no signup needed — see
   section 2) for clean hostnames instead of `ip:port`. Pi-hole (or another local DNS
   resolver) is only needed if you want a real owned domain to resolve LAN-wide rather
@@ -653,18 +654,39 @@ complexity in `seedbox` mode exists specifically for a ratio-obligated tracker s
 box with public ones, and doesn't apply here), and still strips indexer tags (the
 tag-exclusion trap in section 9's Warnings applies regardless of mode).
 
-### Adding a VPN back
+### Adding a VPN
 
-If you want the privacy seedbox mode gets "for free" via being remote, layer Gluetun
-back on yourself — this stack had exactly that (Gluetun + qBittorrent sharing its
-network namespace + a port-forwarding sidecar) before the seedbox migration; see
-git commit `cabf8d4` (`git show cabf8d4:compose.yaml`) for the exact service
-definitions to adapt. Two things to update if you do: point `qbittorrent`'s volumes at
-`${MEDIA_ROOT}:/media` (not the old three-way `MOVIES_PATH`/`TV_PATH`/`DOWNLOADS_PATH`
-split that commit used — that's exactly what breaks hardlinking, see the Warnings
-above), and add your own VPN provider's credentials to `.env` (not automatable any more
-than seedbox credentials are — see `provision.py`'s own docstring for what it
-deliberately leaves manual).
+If you want the privacy seedbox mode gets "for free" via being remote, `compose.vpn.yml`
+routes the local qBittorrent through a WireGuard VPN (Gluetun) instead — the same shape
+this stack used before the seedbox migration (Gluetun + qBittorrent sharing its network
+namespace + a port-forwarding sidecar so Gluetun's forwarded port reaches qBittorrent's
+own settings; see git commit `cabf8d4` for the original three-service version this was
+adapted from), updated to route through the single `${MEDIA_ROOT}:/media` mount instead
+of the old three-way path split that broke hardlinking, and to use the real
+`QBT_USER`/`QBT_PASS` credentials local mode already sets rather than env vars
+qBittorrent itself never actually read.
+
+1. Fill in `.env`'s VPN block — `VPN_SERVICE_PROVIDER`, `WIREGUARD_PRIVATE_KEY`,
+   `WIREGUARD_ADDRESSES` (see
+   [Gluetun's provider list](https://github.com/qdm12/gluetun-wiki/tree/main/setup) for
+   your provider's exact values) — `scripts/setup.py` prompts for these directly if you
+   answer yes to "route it through a VPN?" during setup.
+2. Bring the stack up with the overlay layered on top, instead of plain
+   `docker compose up -d`:
+   ```bash
+   docker compose -f compose.yaml -f compose.vpn.yml up -d
+   ```
+   This **replaces** the base `qbittorrent` service's networking (no ports of its own —
+   they publish via `gluetun` instead, since Docker won't let a container both publish
+   its own ports and share another container's network stack) and adds `gluetun` and
+   `qbittorrent-port-sync` (syncs Gluetun's forwarded port into qBittorrent's own
+   settings, so peers can actually reach you through the tunnel).
+3. The rest is unchanged — same first-run credential/save-path step above, same
+   `provision.py` run afterward. Every subsequent `docker compose` command (restart,
+   logs, down) needs both `-f` flags too, as long as you're using this overlay.
+
+Confirm it's actually tunneling before trusting it: `docker exec gluetun wget -qO-
+https://ipinfo.io/ip` should show the VPN's IP, not your real one.
 
 ### What's not relevant in this mode
 

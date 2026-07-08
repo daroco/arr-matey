@@ -1,0 +1,80 @@
+# Optional overlay for `local` mode: routes qbittorrent through a WireGuard VPN
+# (Gluetun) instead of downloading with your home IP exposed to public-tracker swarms.
+# Not merged into compose.yaml directly -- network_mode: "service:gluetun" can't
+# cleanly coexist with a plain standalone qbittorrent service in one file, so this
+# overlay REPLACES the base qbittorrent service's networking instead. Layer it on top:
+#
+#   docker compose -f compose.yaml -f compose.vpn.yml up -d
+#
+# Needs your own VPN provider's WireGuard config in .env (VPN_SERVICE_PROVIDER,
+# WIREGUARD_PRIVATE_KEY, WIREGUARD_ADDRESSES) -- see README's local-mode section.
+# Requires DOWNLOAD_MODE=local + COMPOSE_PROFILES=local, same as local mode without a
+# VPN; this overlay doesn't work with seedbox mode (nothing here would be used).
+#
+# This is the same shape this stack used before the seedbox migration (see git commit
+# cabf8d4 for the original three-service version) -- updated here to route through the
+# single ${MEDIA_ROOT}:/media mount (not the old three-way path split, which broke
+# hardlinking) and to use QBT_USER/QBT_PASS (the real WebUI credentials local mode
+# already sets during its first-run step) rather than env vars qBittorrent itself never
+# actually read.
+
+services:
+
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    profiles:
+      - local
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER}
+      - VPN_TYPE=${VPN_TYPE:-wireguard}
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES}
+      - SERVER_COUNTRIES=${VPN_SERVER_COUNTRIES:-}
+      - VPN_PORT_FORWARDING=on
+      - VPN_PORT_FORWARDING_PROVIDER=${VPN_SERVICE_PROVIDER}
+      - TZ=${TZ:-UTC}
+    ports:
+      # qBittorrent's WebUI/torrent ports are published here, not on the qbittorrent
+      # service below -- it shares gluetun's network stack, so gluetun is what
+      # actually owns the ports as far as Docker's concerned.
+      - "8080:8080"
+      - "6881:6881"
+      - "6881:6881/udp"
+    volumes:
+      - ${CONFIG_ROOT}/gluetun:/gluetun
+      - ${CONFIG_ROOT}/gluetun-tmp:/tmp/gluetun
+    restart: unless-stopped
+
+  # Overrides the base compose.yaml's qbittorrent service: no ports of its own (they
+  # move to gluetun above, since Docker won't let a container both publish its own
+  # ports and share another container's network stack), routed entirely through
+  # gluetun's tunnel instead.
+  qbittorrent:
+    network_mode: "service:gluetun"
+    depends_on:
+      - gluetun
+    ports: !reset []
+
+  qbittorrent-port-sync:
+    image: snoringdragon/gluetun-qbittorrent-port-manager:latest
+    container_name: qbittorrent-port-sync
+    profiles:
+      - local
+    network_mode: "service:gluetun"
+    depends_on:
+      - gluetun
+      - qbittorrent
+    volumes:
+      - ${CONFIG_ROOT}/gluetun-tmp:/tmp/gluetun
+    environment:
+      - QBITTORRENT_SERVER=localhost
+      - QBITTORRENT_PORT=8080
+      - QBITTORRENT_USER=${QBT_USER}
+      - QBITTORRENT_PASS=${QBT_PASS}
+      - PORT_FORWARDED=/tmp/gluetun/forwarded_port
+    restart: unless-stopped

@@ -154,12 +154,30 @@ def main():
         values["QBT_USER"] = "admin"
         values["QBT_PASS"] = ask("qBittorrent WebUI password to set")
 
+    use_vpn = False
+    if mode == "local":
+        print()
+        print("Without a VPN, qBittorrent downloads with your home IP visible to")
+        print("public-tracker swarms directly -- that's the tradeoff for zero cost.")
+        use_vpn = ask_yes_no("Route it through a WireGuard VPN instead?", default_yes=False)
+        if use_vpn:
+            print()
+            print("--- VPN (Gluetun) ---")
+            print("See https://github.com/qdm12/gluetun-wiki/tree/main/setup for your")
+            print("provider's exact required values -- below assumes WireGuard.")
+            values["VPN_SERVICE_PROVIDER"] = ask("VPN provider (Gluetun's name for it, e.g. protonvpn)")
+            values["VPN_TYPE"] = ask("VPN type", default="wireguard")
+            values["WIREGUARD_PRIVATE_KEY"] = ask("WireGuard private key")
+            values["WIREGUARD_ADDRESSES"] = ask("WireGuard address (e.g. 10.2.0.2/32)")
+            values["VPN_SERVER_COUNTRIES"] = ask("Server country filter (blank = any)", default="")
+
     write_env(values)
     print()
     print(f"Wrote {ENV_PATH}")
     print()
     print("Next steps:")
-    print("  1. docker compose up -d")
+    compose_cmd = "docker compose -f compose.yaml -f compose.vpn.yml up -d" if use_vpn else "docker compose up -d"
+    print(f"  1. {compose_cmd}")
     if mode == "local":
         print("  2. docker logs qbittorrent   # find 'A temporary password is provided...'")
         print("     Log into http://localhost:8080 as admin with that password, then:")

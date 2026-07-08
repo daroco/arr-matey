@@ -97,12 +97,14 @@ services:
     restart: unless-stopped
 
   # Local-mode only (see the header note above) -- inert/not started unless
-  # COMPOSE_PROFILES includes "local". No VPN, no VPN-based port forwarding:
-  # this is the zero-cost-of-entry path, not the private/hardened one. See
-  # README's local-mode section for the required one-time first-run step
-  # (qBittorrent ignores QBITTORRENT_USER/PASS env vars entirely -- it
-  # generates a random temp password on first boot instead) and for how to
-  # layer Gluetun (VPN) back on if you want it.
+  # COMPOSE_PROFILES includes "local". No VPN by default: this is the
+  # zero-cost-of-entry path, not the private/hardened one. See README's
+  # local-mode section for the required one-time first-run step (qBittorrent
+  # ignores QBT_USER/PASS env vars entirely -- it generates a random temp
+  # password on first boot instead). Want a VPN? Layer compose.vpn.yml on top
+  # (`docker compose -f compose.yaml -f compose.vpn.yml up -d`) instead of
+  # editing this service directly -- it overrides qbittorrent's networking to
+  # route through Gluetun and adds the port-forwarding sidecar.
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:latest
     container_name: qbittorrent
