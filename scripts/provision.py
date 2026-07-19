@@ -73,6 +73,11 @@ class Config:
             self.private_tracker_name = env.get("PRIVATE_TRACKER_NAME", "TorrentLeech")
             self.private_seed_ratio = float(env.get("PRIVATE_TRACKER_SEED_RATIO", 1))
             self.private_seed_time = int(env.get("PRIVATE_TRACKER_SEED_TIME_MINUTES", 14400))
+            # Deliberately separate from the private tracker's values above -- Transmission
+            # (public trackers, no real seed obligation) needs to be tunable independently,
+            # not silently pinned to whatever the private tracker's Hit & Run rule requires.
+            self.public_seed_ratio = float(env.get("PUBLIC_SEED_RATIO", 1))
+            self.public_seed_time = int(env.get("PUBLIC_SEED_TIME_MINUTES", 14400))
             self.seedbox_host = urllib.parse.urlparse(env.get("SEEDBOX_URL", "")).netloc
             self.seedbox_basic_auth = env.get("SEEDBOX_BASIC_AUTH", "")
         else:
@@ -493,8 +498,8 @@ def configure_seedbox_transmission(cfg):
         "method": "session-set",
         "arguments": {
             "dht-enabled": True, "pex-enabled": True, "lpd-enabled": True,
-            "seedRatioLimit": cfg.private_seed_ratio, "seedRatioLimited": True,
-            "idle-seeding-limit": cfg.private_seed_time, "idle-seeding-limit-enabled": True,
+            "seedRatioLimit": cfg.public_seed_ratio, "seedRatioLimited": True,
+            "idle-seeding-limit": cfg.public_seed_time, "idle-seeding-limit-enabled": True,
         },
     })
     log.info("[seedbox/Transmission] DHT/PEX/LPD on, ratio + idle-seed backstop set")

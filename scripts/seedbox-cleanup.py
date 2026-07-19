@@ -32,9 +32,12 @@ import requests
 from dotenv import dotenv_values
 
 ENV_PATH = Path(r"C:\Users\drcor\acquisitions\.env")
-SONARR_CONFIG = Path(r"D:\appdata\sonarr\config.xml")
-RADARR_CONFIG = Path(r"D:\appdata\radarr\config.xml")
-LOG_PATH = Path(r"D:\appdata\seedbox-cleanup.log")
+
+_env = dotenv_values(ENV_PATH)
+_CONFIG_ROOT = Path(_env["CONFIG_ROOT"])
+SONARR_CONFIG = _CONFIG_ROOT / "sonarr" / "config.xml"
+RADARR_CONFIG = _CONFIG_ROOT / "radarr" / "config.xml"
+LOG_PATH = _CONFIG_ROOT / "seedbox-cleanup.log"
 SONARR_BASE = "http://localhost:8989"
 RADARR_BASE = "http://localhost:7878"
 HISTORY_PAGE_SIZE = 250

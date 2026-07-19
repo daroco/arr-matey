@@ -21,15 +21,23 @@ import subprocess
 import sys
 from pathlib import Path
 
+from dotenv import dotenv_values
+
 RCLONE = Path(r"C:\Users\drcor\AppData\Local\Microsoft\WinGet\Packages\Rclone.Rclone_"
               r"Microsoft.Winget.Source_8wekyb3d8bbwe\rclone-v1.74.3-windows-amd64\rclone.exe")
-LOG_PATH = Path(r"D:\appdata\rclone-sync-wrapper.log")
+ENV_PATH = Path(r"C:\Users\drcor\acquisitions\.env")
+
+_env = dotenv_values(ENV_PATH)
+MEDIA_ROOT = Path(_env["MEDIA_ROOT"])
+CONFIG_ROOT = Path(_env["CONFIG_ROOT"])
+
+LOG_PATH = CONFIG_ROOT / "rclone-sync-wrapper.log"
 
 SYNCS = [
-    ("seedbox:/home/seedit4me/torrents/qbittorrent/ratio", r"D:\media\downloads\seedbox",
-     r"D:\appdata\rclone-sync.log"),
-    ("seedbox:/home/seedit4me/torrents/transmission/downloads", r"D:\media\downloads\seedbox-transmission",
-     r"D:\appdata\rclone-sync-transmission.log"),
+    ("seedbox:/home/seedit4me/torrents/qbittorrent/ratio", str(MEDIA_ROOT / "downloads" / "seedbox"),
+     str(CONFIG_ROOT / "rclone-sync.log")),
+    ("seedbox:/home/seedit4me/torrents/transmission/downloads", str(MEDIA_ROOT / "downloads" / "seedbox-transmission"),
+     str(CONFIG_ROOT / "rclone-sync-transmission.log")),
 ]
 
 log = logging.getLogger("rclone-sync")

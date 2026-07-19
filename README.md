@@ -461,11 +461,12 @@ doesn't care whether the request is for `/qbittorrent/...` or Transmission's `/r
    the rclone sync actually targets for that client** — mismatching the two means
    Sonarr/Radarr look for the file one directory level away from where it lands.
 6. **Seeding policy, per client — this is the actual point of running two clients**:
-   - qBittorrent (private tracker): ratio 1.0 **or** the tracker's Hit & Run seed-time
-     requirement, whichever's sooner — check the tracker's *actual* rule rather than
-     assume a round number (240 hours / `14400` minutes for this tracker's rule).
+   - qBittorrent (private tracker): ratio `PRIVATE_TRACKER_SEED_RATIO` **or**
+     `PRIVATE_TRACKER_SEED_TIME_MINUTES`, whichever's sooner — check the tracker's
+     *actual* rule rather than assume the round-number defaults (`1` / `14400` minutes).
      `POST /qbittorrent/api/v2/app/setPreferences`: `max_ratio_enabled=true`,
-     `max_ratio=1`, `max_seeding_time_enabled=true`, `max_seeding_time=14400`.
+     `max_ratio=<PRIVATE_TRACKER_SEED_RATIO>`, `max_seeding_time_enabled=true`,
+     `max_seeding_time=<PRIVATE_TRACKER_SEED_TIME_MINUTES>`.
      **Action must be `max_ratio_act=0` (Pause) — not "Remove + delete files."** Sonarr
      actively refuses to add a download client configured to auto-delete on its ratio
      limit ("qBittorrent is configured to remove torrents when they reach their Share
@@ -475,10 +476,15 @@ doesn't care whether the request is for `/qbittorrent/...` or Transmission's `/r
      file in place; Sonarr's own "Remove completed downloads" (already on) cleans up the
      torrent *after* confirming a successful import, not on the client's own timeline.
    - Transmission (public trackers, no real tracker obligation): a modest ratio + a
-     disk-hygiene time cap is reasonable, since there's nothing to comply with. Via the
-     JSON-RPC endpoint (`session-set`): `"seedRatioLimit": 1, "seedRatioLimited": true`
-     plus `"idle-seeding-limit": <minutes>, "idle-seeding-limit-enabled": true` as a
-     backstop. **Important semantic gap**: Transmission's (and Deluge's) idle-seed-time
+     disk-hygiene time cap is reasonable, since there's nothing to comply with. Driven by
+     its own `PUBLIC_SEED_RATIO` / `PUBLIC_SEED_TIME_MINUTES` — deliberately **separate**
+     env vars from the private tracker's above, not shared, since the two clients have no
+     obligation to match (an earlier version of `provision.py` reused
+     `PRIVATE_TRACKER_SEED_RATIO` for both, which silently pinned Transmission's ratio to
+     whatever the private tracker's Hit & Run rule required). Via the JSON-RPC endpoint
+     (`session-set`): `"seedRatioLimit": <PUBLIC_SEED_RATIO>, "seedRatioLimited": true`
+     plus `"idle-seeding-limit": <PUBLIC_SEED_TIME_MINUTES>, "idle-seeding-limit-enabled":
+     true` as a backstop. **Important semantic gap**: Transmission's (and Deluge's) idle-seed-time
      limit means "stop after N minutes of *no* peer activity," not "stop after N minutes
      total, active or not" the way qBittorrent's `max_seeding_time` works — a torrent
      with any occasional trickle of activity never hits an idle limit no matter how long
@@ -529,7 +535,7 @@ doesn't care whether the request is for `/qbittorrent/...` or Transmission's `/r
    the seedbox/staging copies afterward. Only ever touches the seedbox itself — the
    local staging mirror is left for the next rclone sync run to clean up on its own,
    since `sync` already removes local files no longer present at the source. Logs to
-   `D:\appdata\seedbox-cleanup.log` (silent/no file if nothing currently qualifies); run
+   `<CONFIG_ROOT>\seedbox-cleanup.log` (silent/no file if nothing currently qualifies); run
    with `--dry-run` to preview without deleting anything.
 
 ### Warnings (all hit for real running this setup, not theoretical)
@@ -600,6 +606,20 @@ working, don't just trust the setting: `docker exec radarr stat -c '%d:%i' <a fi
 /media/downloads/...>` and the same file's path after import under `/media/movies/...` —
 matching inode numbers mean it's a real hardlink (one copy of the data, two names for it);
 different inodes mean it silently copied.
+
+**Relocating `MEDIA_ROOT` to a new drive breaks every existing hardlink, silently
+doubling disk usage.** `robocopy` (and any plain file copy) has no concept of NTFS
+hardlinks — it copies each linked path as an independent file with its own data, so a
+file that only cost one copy's worth of space under `downloads/` + `movies/`/`tv/` on
+the old drive costs two on the new one. This doesn't show up as a copy failure or error
+of any kind; the only symptom is the destination using noticeably more space than the
+source for the same file count (caught here via `du -sb` disagreeing between drives by
+hundreds of GB despite matching file totals). Fix: after the copy, find every group of
+files sharing an inode on the old drive (`find <old_root> -type f -printf "%i|%p\n"`,
+group by inode) and recreate the same hardlink relationship on the new drive — delete
+one member of each duplicated pair at the destination and `os.link()`/`mklink /H` it to
+its sibling instead of leaving two independent copies. Verify with the same
+matching-inode check as above once done.
 
 **Transmission's stock web UI serves its RPC endpoint at the site root, not under its
 own path** — the UI's own JS defines the RPC URL as a *relative* `../rpc`, which resolves
