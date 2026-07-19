@@ -523,6 +523,14 @@ doesn't care whether the request is for `/qbittorrent/...` or Transmission's `/r
    `--min-age 30s` skips files still being written remotely; rclone also writes to a
    `.partial` temp name and renames atomically on completion, which independently
    guards against Sonarr/Radarr importing a half-copied file.
+   Optional: set `NTFY_TOPIC` (and `NTFY_SERVER` if self-hosting) to get a
+   [ntfy.sh](https://ntfy.sh) push notification per file as it finishes syncing down.
+   Parsed from the new tail of rclone's own `--log-file` after each run (only the
+   bytes appended by *that* run — the log persists across runs, so parsing the whole
+   file every time would re-notify on old entries). Best-effort: a failed POST is
+   logged but never fails the sync. Leave `NTFY_TOPIC` blank to disable. Pick a
+   hard-to-guess topic name — anyone who knows it can read your notifications on
+   public ntfy.sh, no auth by default.
 8. **Cleanup** (`scripts/seedbox-cleanup.py`, on its own 30-minute scheduled task via
    `pythonw.exe`): deletes a
    torrent on the seedbox only once it's both paused/stopped at its own ratio-or-time
