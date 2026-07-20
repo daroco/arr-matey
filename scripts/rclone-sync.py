@@ -22,6 +22,10 @@ gets polled every POLL_SECONDS while alive, tailing the new bytes it has appende
 its own --log-file since the last poll (byte offset tracked in binary mode -- text-mode
 seek/tell offsets aren't reliably mixable with manual length math across encodings).
 Notifications are best-effort: a failed POST is logged but never fails the sync itself.
+rclone logs large files (roughly >250MB, which is most actual video files) as
+"Multi-thread Copied (...)" instead of plain "Copied (...)" -- COPIED_RE matches both,
+or every real download silently stops notifying while small sidecar files (nfo/srt/jpg)
+keep working, masking the gap.
 """
 
 import logging
@@ -54,7 +58,7 @@ SYNCS = [
      str(CONFIG_ROOT / "rclone-sync-transmission.log")),
 ]
 
-COPIED_RE = re.compile(r"INFO\s*:\s*(.+):\s*Copied \((new|replaced existing)\)\s*$")
+COPIED_RE = re.compile(r"INFO\s*:\s*(.+):\s*(?:Multi-thread )?Copied \((new|replaced existing)\)\s*$")
 POLL_SECONDS = 10
 
 log = logging.getLogger("rclone-sync")
