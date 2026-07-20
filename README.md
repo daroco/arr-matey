@@ -525,10 +525,14 @@ doesn't care whether the request is for `/qbittorrent/...` or Transmission's `/r
    guards against Sonarr/Radarr importing a half-copied file.
    Optional: set `NTFY_TOPIC` (and `NTFY_SERVER` if self-hosting) to get a
    [ntfy.sh](https://ntfy.sh) push notification per file as it finishes syncing down.
-   Parsed from the new tail of rclone's own `--log-file` after each run (only the
-   bytes appended by *that* run — the log persists across runs, so parsing the whole
-   file every time would re-notify on old entries). Best-effort: a failed POST is
-   logged but never fails the sync. Leave `NTFY_TOPIC` blank to disable. Pick a
+   rclone runs via `Popen` and gets polled every 10s while alive, tailing whatever new
+   bytes it has appended to its own `--log-file` since the last poll — a plain
+   `subprocess.run()` would block until the *entire* multi-file sync exits, batching
+   every notification up until a run that can take hours finally finishes. Byte offsets
+   are tracked in binary mode (text-mode seek/tell doesn't reliably mix with manual
+   length math across encodings), and only complete lines are consumed — a trailing
+   partial line still being written is left for the next poll. Best-effort: a failed
+   POST is logged but never fails the sync. Leave `NTFY_TOPIC` blank to disable. Pick a
    hard-to-guess topic name — anyone who knows it can read your notifications on
    public ntfy.sh, no auth by default.
 8. **Cleanup** (`scripts/seedbox-cleanup.py`, on its own 30-minute scheduled task via
