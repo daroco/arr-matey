@@ -524,17 +524,23 @@ doesn't care whether the request is for `/qbittorrent/...` or Transmission's `/r
    `.partial` temp name and renames atomically on completion, which independently
    guards against Sonarr/Radarr importing a half-copied file.
    Optional: set `NTFY_TOPIC` (and `NTFY_SERVER` if self-hosting) to get a
-   [ntfy.sh](https://ntfy.sh) push notification per file as it finishes syncing down.
+   [ntfy.sh](https://ntfy.sh) push notification per *video* file as it finishes syncing
+   down — sidecars (nfo/srt/sfv) and anything under a `Sample` path/filename are logged
+   but not notified, since notifying on every sidecar/sample copy burns through
+   ntfy.sh's free-tier daily quota before the real files even get a chance (a heavy
+   catch-up day can still hit that quota even filtered — self-host `NTFY_SERVER` or a
+   paid ntfy.sh plan if that becomes a recurring problem). A failed POST (network error
+   or non-2xx response — a quota-exceeded 429 isn't a network error, so the response
+   status is checked explicitly) is logged but never fails the sync.
    rclone runs via `Popen` and gets polled every 10s while alive, tailing whatever new
    bytes it has appended to its own `--log-file` since the last poll — a plain
    `subprocess.run()` would block until the *entire* multi-file sync exits, batching
    every notification up until a run that can take hours finally finishes. Byte offsets
    are tracked in binary mode (text-mode seek/tell doesn't reliably mix with manual
    length math across encodings), and only complete lines are consumed — a trailing
-   partial line still being written is left for the next poll. Best-effort: a failed
-   POST is logged but never fails the sync. Leave `NTFY_TOPIC` blank to disable. Pick a
-   hard-to-guess topic name — anyone who knows it can read your notifications on
-   public ntfy.sh, no auth by default.
+   partial line still being written is left for the next poll. Leave `NTFY_TOPIC` blank
+   to disable. Pick a hard-to-guess topic name — anyone who knows it can read your
+   notifications on public ntfy.sh, no auth by default.
 8. **Cleanup** (`scripts/seedbox-cleanup.py`, on its own 30-minute scheduled task via
    `pythonw.exe`): deletes a
    torrent on the seedbox only once it's both paused/stopped at its own ratio-or-time

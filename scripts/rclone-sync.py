@@ -14,17 +14,21 @@ here instead, and the script exits non-zero on failure so Task Scheduler's Last 
 Result actually reflects what happened -- rclone's own --log-file only tells you
 *that* something went wrong if you already knew to go looking.
 
-If NTFY_TOPIC is set, one push notification fires per file as it's copied down.
-subprocess.run() blocks until rclone's whole multi-file sync exits, so notifying only
-after that call returns would batch every notification up until the entire sync
-finishes -- no good for a run that can take hours. Instead rclone runs via Popen and
-gets polled every POLL_SECONDS while alive, tailing the new bytes it has appended to
-its own --log-file since the last poll (byte offset tracked in binary mode -- text-mode
-seek/tell offsets aren't reliably mixable with manual length math across encodings).
-Notifications are best-effort: a failed POST is logged but never fails the sync itself.
-rclone logs large files (roughly >250MB, which is most actual video files) as
-"Multi-thread Copied (...)" instead of plain "Copied (...)" -- COPIED_RE matches both,
-or every real download silently stops notifying while small sidecar files (nfo/srt/jpg)
+If NTFY_TOPIC is set, one push notification fires per *video* file as it's copied down
+(sidecars like nfo/srt/sfv and anything under a "Sample" path/filename are logged but
+not notified -- ntfy.sh's free-tier daily quota was getting exhausted by sidecar/sample
+noise before the real files even had a chance, and failures were silent since a 429
+response isn't a network error; notify_ntfy now logs a warning on any non-2xx response
+instead of assuming success). subprocess.run() blocks until rclone's whole multi-file
+sync exits, so notifying only after that call returns would batch every notification up
+until the entire sync finishes -- no good for a run that can take hours. Instead rclone
+runs via Popen and gets polled every POLL_SECONDS while alive, tailing the new bytes it
+has appended to its own --log-file since the last poll (byte offset tracked in binary
+mode -- text-mode seek/tell offsets aren't reliably mixable with manual length math
+across encodings). Notifications are best-effort: a failed POST is logged but never
+fails the sync itself. rclone logs large files (roughly >250MB, which is most actual
+video files) as "Multi-thread Copied (...)" instead of plain "Copied (...)" -- COPIED_RE
+matches both, or every real download silently stops notifying while small sidecar files
 keep working, masking the gap.
 """
 
@@ -61,6 +65,14 @@ SYNCS = [
 COPIED_RE = re.compile(r"INFO\s*:\s*(.+):\s*(?:Multi-thread )?Copied \((new|replaced existing)\)\s*$")
 POLL_SECONDS = 10
 
+# Only the actual video file is notification-worthy -- every sync also copies down
+# nfo/srt/sfv sidecars and sample clips, one "Copied" line each. Notifying on all of
+# those burned through ntfy.sh's free-tier daily quota before the real files even got
+# a chance (404 attempts in one day, most of them sidecars) -- silently, since a 429
+# response isn't a network error and wasn't being checked at all.
+VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov"}
+SAMPLE_RE = re.compile(r"(?:^|[\\/.])sample(?:[\\/.]|$)", re.IGNORECASE)
+
 log = logging.getLogger("rclone-sync")
 
 
@@ -68,11 +80,13 @@ def notify_ntfy(title, message):
     if not NTFY_TOPIC:
         return
     try:
-        requests.post(
+        r = requests.post(
             NTFY_SERVER,
             json={"topic": NTFY_TOPIC, "title": title, "message": message},
             timeout=10,
         )
+        if not r.ok:
+            log.warning(f"ntfy notification rejected ({r.status_code}): {title} -- {r.text[:200]}")
     except requests.RequestException:
         log.exception(f"ntfy notification failed: {title}")
 
@@ -99,7 +113,8 @@ def notify_new_files(rclone_log_file, offset):
             file_path = m.group(1)
             name = Path(file_path).name
             log.info(f"copied down: {file_path}")
-            notify_ntfy("File synced", name)
+            if Path(name).suffix.lower() in VIDEO_EXTENSIONS and not SAMPLE_RE.search(file_path):
+                notify_ntfy("File synced", name)
     return offset + len(complete)
 
 
