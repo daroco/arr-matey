@@ -524,14 +524,19 @@ doesn't care whether the request is for `/qbittorrent/...` or Transmission's `/r
    `.partial` temp name and renames atomically on completion, which independently
    guards against Sonarr/Radarr importing a half-copied file.
    Optional: set `NTFY_TOPIC` (and `NTFY_SERVER` if self-hosting) to get a
-   [ntfy.sh](https://ntfy.sh) push notification per *video* file as it finishes syncing
-   down — sidecars (nfo/srt/sfv) and anything under a `Sample` path/filename are logged
-   but not notified, since notifying on every sidecar/sample copy burns through
-   ntfy.sh's free-tier daily quota before the real files even get a chance (a heavy
-   catch-up day can still hit that quota even filtered — self-host `NTFY_SERVER` or a
-   paid ntfy.sh plan if that becomes a recurring problem). A failed POST (network error
-   or non-2xx response — a quota-exceeded 429 isn't a network error, so the response
-   status is checked explicitly) is logged but never fails the sync.
+   [ntfy.sh](https://ntfy.sh) push notification as *video* files finish syncing down —
+   sidecars (nfo/srt/sfv) and anything under a `Sample` path/filename are logged but not
+   notified, since notifying on every sidecar/sample copy burns through ntfy.sh's
+   free-tier daily quota before the real files even get a chance. Notifications are also
+   grouped by top-level synced folder (a season pack's episodes all land in one torrent
+   folder, so they're one group) and batched to send at most one push per group per sync
+   run rather than one per file — a 9-episode season pack finishing in one run is one
+   notification, not nine (a day with 404 raw file-completion events came out to 33
+   grouped notifications in practice). A heavy catch-up day can still hit the quota even
+   with grouping — self-host `NTFY_SERVER` or a paid ntfy.sh plan if that becomes a
+   recurring problem. A failed POST (network error or non-2xx response — a
+   quota-exceeded 429 isn't a network error, so the response status is checked
+   explicitly) is logged but never fails the sync.
    rclone runs via `Popen` and gets polled every 10s while alive, tailing whatever new
    bytes it has appended to its own `--log-file` since the last poll — a plain
    `subprocess.run()` would block until the *entire* multi-file sync exits, batching

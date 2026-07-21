@@ -19,17 +19,22 @@ If NTFY_TOPIC is set, one push notification fires per *video* file as it's copie
 not notified -- ntfy.sh's free-tier daily quota was getting exhausted by sidecar/sample
 noise before the real files even had a chance, and failures were silent since a 429
 response isn't a network error; notify_ntfy now logs a warning on any non-2xx response
-instead of assuming success). subprocess.run() blocks until rclone's whole multi-file
-sync exits, so notifying only after that call returns would batch every notification up
-until the entire sync finishes -- no good for a run that can take hours. Instead rclone
-runs via Popen and gets polled every POLL_SECONDS while alive, tailing the new bytes it
-has appended to its own --log-file since the last poll (byte offset tracked in binary
-mode -- text-mode seek/tell offsets aren't reliably mixable with manual length math
-across encodings). Notifications are best-effort: a failed POST is logged but never
-fails the sync itself. rclone logs large files (roughly >250MB, which is most actual
-video files) as "Multi-thread Copied (...)" instead of plain "Copied (...)" -- COPIED_RE
-matches both, or every real download silently stops notifying while small sidecar files
-keep working, masking the gap.
+instead of assuming success), *grouped* by top-level synced folder (a season pack's five
+episodes share one folder -- one torrent -- so they're one group) and batched to send at
+most one notification per group per SYNCS entry's sync run, instead of one per file. A
+single 10-episode season pack completing under one sync run is one push, not ten.
+subprocess.run() blocks until rclone's whole multi-file sync exits, so notifying only
+after that call returns would batch every notification up until the entire sync
+finishes -- no good for a run that can take hours. Instead rclone runs via Popen and
+gets polled every POLL_SECONDS while alive, tailing the new bytes it has appended to
+its own --log-file since the last poll (byte offset tracked in binary mode -- text-mode
+seek/tell offsets aren't reliably mixable with manual length math across encodings);
+notify_new_files only accumulates into the pending dict on each poll, the grouped
+notifications for that SYNCS entry go out once its rclone process exits. Notifications
+are best-effort: a failed POST is logged but never fails the sync itself. rclone logs
+large files (roughly >250MB, which is most actual video files) as "Multi-thread Copied
+(...)" instead of plain "Copied (...)" -- COPIED_RE matches both, or every real download
+silently stops notifying while small sidecar files keep working, masking the gap.
 """
 
 import logging
@@ -38,6 +43,7 @@ import re
 import subprocess
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import requests
@@ -91,9 +97,18 @@ def notify_ntfy(title, message):
         log.exception(f"ntfy notification failed: {title}")
 
 
-def notify_new_files(rclone_log_file, offset):
-    """Reads any new *complete* lines appended since offset, notifies on file
-    completions, and returns the byte offset up to the last complete line -- a
+def group_key(file_path):
+    """The top-level folder in the synced path is the torrent's own folder -- a season
+    pack's episodes all share one, a single movie/episode release is its own. Falls back
+    to the filename itself for the rare file synced with no parent folder at all."""
+    parts = Path(file_path).parts
+    return parts[0] if len(parts) > 1 else parts[-1]
+
+
+def notify_new_files(rclone_log_file, offset, pending):
+    """Reads any new *complete* lines appended since offset, accumulates video-file
+    completions into `pending` (grouped by group_key, flushed by flush_pending once the
+    sync run settles), and returns the byte offset up to the last complete line -- a
     trailing partial line (still being written) is left for the next poll."""
     path = Path(rclone_log_file)
     if not path.exists():
@@ -114,8 +129,16 @@ def notify_new_files(rclone_log_file, offset):
             name = Path(file_path).name
             log.info(f"copied down: {file_path}")
             if Path(name).suffix.lower() in VIDEO_EXTENSIONS and not SAMPLE_RE.search(file_path):
-                notify_ntfy("File synced", name)
+                pending[group_key(file_path)].append(name)
     return offset + len(complete)
+
+
+def flush_pending(pending):
+    for group, names in pending.items():
+        title = group if len(names) > 1 else names[0]
+        message = ", ".join(names) if len(names) > 1 else names[0]
+        notify_ntfy(title[:200], message[:1000])
+    pending.clear()
 
 
 def setup_logging():
@@ -132,6 +155,7 @@ def main():
     failures = 0
     for remote, local, rclone_log_file in SYNCS:
         offset = Path(rclone_log_file).stat().st_size if Path(rclone_log_file).exists() else 0
+        pending = defaultdict(list)
         proc = subprocess.Popen(
             [str(RCLONE), "sync", remote, local, "--min-age", "30s",
              "--log-file", rclone_log_file, "--log-level", "INFO"],
@@ -139,8 +163,9 @@ def main():
         )
         while proc.poll() is None:
             time.sleep(POLL_SECONDS)
-            offset = notify_new_files(rclone_log_file, offset)
-        offset = notify_new_files(rclone_log_file, offset)  # catch anything written just before exit
+            offset = notify_new_files(rclone_log_file, offset, pending)
+        offset = notify_new_files(rclone_log_file, offset, pending)  # catch anything written just before exit
+        flush_pending(pending)
         if proc.returncode == 0:
             log.info(f"sync OK: {remote} -> {local}")
         else:
