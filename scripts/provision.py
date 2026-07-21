@@ -1,9 +1,10 @@
 """
 Idempotent bootstrap script: wires up every cross-app connection this stack needs --
 Prowlarr -> Sonarr/Radarr, download clients, indexer routing, Remote Path Mappings,
-Bazarr -> Sonarr/Radarr, Seerr -> Sonarr/Radarr, and the seedbox's own qBittorrent/
-Transmission ratio+privacy settings -- via each app's REST API instead of manually
-clicking through every UI. Safe to re-run: every step is create-if-missing or
+Bazarr -> Sonarr/Radarr, Seerr -> Sonarr/Radarr, a Custom Format that rejects
+executable/script-named releases before they're ever grabbed, and the seedbox's own
+qBittorrent/Transmission ratio+privacy settings -- via each app's REST API instead of
+manually clicking through every UI. Safe to re-run: every step is create-if-missing or
 set-to-desired-state, never destructive to unrelated existing config.
 
 Deliberately NOT automated (left as one-time manual/interactive UI steps):
@@ -255,6 +256,64 @@ def configure_download_client(app, implementation, name, category_field, categor
     created = app("POST", "/api/v3/downloadclient", json=body)
     log.info(f"created download client '{name}' (id {created['id']})")
     return created["id"]
+
+
+SAFETY_CF_NAME = "Reject - Executable or Script"
+# Matches a release title ending in a known executable/script/installer extension
+# (e.g. "...GROUP.exe") -- Sonarr/Radarr already refuse to *import* these on their own,
+# this stops the wasted download+bandwidth by rejecting the release before it's ever
+# grabbed. Deliberately excludes ".com": scene groups routinely suffix release titles
+# with a site tag like "-GROUP.COM", which would otherwise false-positive on every
+# such release (an actual .com DOS executable is effectively extinct as a threat).
+# Can't reliably do the same for RAR/archive-only releases -- their titles usually
+# carry no indication they're archived, so there's no regex signal to filter on before
+# download (see README's safety-filtering note).
+SAFETY_CF_REGEX = r"\.(exe|msi|scr|bat|cmd|vbs|jar|apk|dmg|pkg|ps1)($|[^a-z0-9])"
+SAFETY_CF_SCORE = -10000
+
+
+def configure_safety_custom_format(app, label):
+    """Create-or-update a Custom Format that rejects executable/script-named releases,
+    then score it negatively enough (below every quality profile's minFormatScore, which
+    defaults to 0 and is left alone here) on every quality profile so it actually takes
+    effect regardless of which profile a series/movie uses."""
+    formats = app("GET", "/api/v3/customformat")
+    existing = next((c for c in formats if c["name"] == SAFETY_CF_NAME), None)
+    body = {
+        "name": SAFETY_CF_NAME,
+        "includeCustomFormatWhenRenaming": False,
+        "specifications": [
+            {
+                "name": "Executable/script extension in release title",
+                "implementation": "ReleaseTitleSpecification",
+                "negate": False,
+                "required": True,
+                "fields": [{"name": "value", "value": SAFETY_CF_REGEX}],
+            }
+        ],
+    }
+    if existing:
+        body["id"] = existing["id"]
+        app("PUT", f"/api/v3/customformat/{existing['id']}", json=body)
+        cf_id = existing["id"]
+        log.info(f"[{label}] custom format '{SAFETY_CF_NAME}' already existed, refreshed it")
+    else:
+        created = app("POST", "/api/v3/customformat", json=body)
+        cf_id = created["id"]
+        log.info(f"[{label}] created custom format '{SAFETY_CF_NAME}'")
+
+    for profile in app("GET", "/api/v3/qualityprofile"):
+        items = profile.get("formatItems", [])
+        item = next((i for i in items if i["format"] == cf_id), None)
+        if item and item["score"] == SAFETY_CF_SCORE:
+            continue
+        if item:
+            item["score"] = SAFETY_CF_SCORE
+        else:
+            items.append({"format": cf_id, "name": SAFETY_CF_NAME, "score": SAFETY_CF_SCORE})
+        profile["formatItems"] = items
+        app("PUT", f"/api/v3/qualityprofile/{profile['id']}", json=profile)
+        log.info(f"[{label}] quality profile '{profile['name']}' now rejects '{SAFETY_CF_NAME}'")
 
 
 def configure_remote_path_mapping(app, remote_path, local_path):
@@ -600,6 +659,10 @@ def main():
     log.info("=== Root folders ===")
     configure_root_folder(sonarr, TV_ROOT)
     configure_root_folder(radarr, MOVIES_ROOT)
+
+    log.info("=== Safety: reject executable/script releases ===")
+    configure_safety_custom_format(sonarr, "Sonarr")
+    configure_safety_custom_format(radarr, "Radarr")
 
     if cfg.download_mode == "seedbox":
         provision_seedbox_mode(cfg, sonarr, radarr)
