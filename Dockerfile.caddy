@@ -1,0 +1,15 @@
+# Caddy with two modules built in, neither present in the stock caddy:latest
+# image -- xcaddy is the standard way to add plugins:
+#  - caddy-dns/cloudflare: DNS-01 ACME challenges (see Caddyfile's `acme_dns
+#    cloudflare` directive), for a real Let's Encrypt cert on watch.<domain>
+#    without port 80 ever being forwarded from the router.
+#  - mholt/caddy-ratelimit: throttles the public watch.<domain> route per
+#    client IP, since that's the one hostname in this Caddyfile reachable
+#    from the internet. See the `rate_limit` block there.
+FROM caddy:builder AS builder
+RUN xcaddy build \
+	--with github.com/caddy-dns/cloudflare \
+	--with github.com/mholt/caddy-ratelimit
+
+FROM caddy:latest
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy

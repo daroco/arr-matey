@@ -146,11 +146,11 @@ flowchart LR
 
 ---
 
-## 5. LAN hostnames
+## 5. LAN hostnames, and the one public route
 
 ```mermaid
 flowchart TD
-    PH["Pi-hole: Local DNS records"] -.->|"resolves *.correll.tv"| DEV["Any device on the LAN"]
+    PH["Pi-hole: Local DNS records"] -.->|"resolves *.correll.tv to the LAN IP"| DEV["Any device on the LAN"]
     DEV -->|http://sonarr.correll.tv| CD["Caddy :80"]
     DEV -->|http://radarr.correll.tv| CD
     DEV -->|http://prowlarr.correll.tv| CD
@@ -163,11 +163,26 @@ flowchart TD
     CD --> BZ2["bazarr:6767"]
     CD --> JS2["jellyseerr:5055"]
     CD --> JF2["host.docker.internal:8096"]
+
+    CF["Cloudflare: public A record"] -.->|"resolves watch.correll.tv to the WAN IP"| PHONE["Any device off-LAN"]
+    PHONE -->|"https://watch.correll.tv (router forwards :443 only)"| CD2["Caddy :443<br/>real Let's Encrypt cert, DNS-01"]
+    CD2 --> JF2
+
+    class CF,PHONE,CD2 public
+    classDef public fill:#e4e8fb,stroke:#4b5fbd,color:#26305c,stroke-width:2px;
 ```
 
 > A real registered TLD (`.tv`) is used instead of a made-up one so browsers actually
 > navigate to it instead of treating it as a search query — the Public Suffix List check
-> made-up TLDs tend to fail.
+> made-up TLDs tend to fail. This same real-registration property is also what makes the
+> public route possible at all: Let's Encrypt can't issue a certificate for a name that
+> doesn't resolve publicly, which a made-up TLD or a Pi-hole-only record never would.
+>
+> `watch.correll.tv` is deliberately the only hostname with a public DNS record. Every
+> other `*.correll.tv` name only exists in Pi-hole's local records — there's no public A
+> or CNAME for `sonarr.correll.tv` etc. to even attempt to resolve, and only port 443 is
+> forwarded at the router (never 80), so those apps stay unreachable from outside the LAN
+> by construction rather than by the Caddyfile's `lanonly` guard alone.
 
 ---
 

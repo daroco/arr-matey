@@ -1,34 +1,118 @@
 {
-	auto_https off
+	# disable_redirects (not a bare `auto_https off`) so ACME/TLS can still work
+	# for the https://watch.{$DOMAIN} block below, without Caddy ever
+	# synthesizing an HTTP->HTTPS redirect on :80 that would shadow the plain-
+	# HTTP LAN routes every other block here relies on.
+	auto_https disable_redirects
+	email {$ACME_EMAIL}
+	# DNS-01 challenge via Cloudflare -- lets Caddy prove domain ownership (and
+	# get a real Let's Encrypt cert for watch.{$DOMAIN}) without port 80 ever
+	# being forwarded from the router. See README section 6.
+	acme_dns cloudflare {$CF_API_TOKEN}
+	# HTTP/3 (QUIC) is UDP-based, and mobile carriers frequently block, throttle,
+	# or otherwise mishandle UDP/443 -- causing a fast failure without a VPN and
+	# a real hang through one, since browsers try QUIC first and only fall back
+	# to normal TCP once it fails. Forcing TCP-only (h1/h2) sidesteps that whole
+	# class of carrier-specific breakage; only affects the one HTTPS site here
+	# (watch.{$DOMAIN}) since every other route is plain, non-QUIC HTTP anyway.
+	servers {
+		protocols h1 h2
+		# watch.{$DOMAIN} is now proxied through Cloudflare (orange cloud), so every
+		# request Caddy sees arrives from a Cloudflare edge IP, not the real visitor
+		# -- {remote_host} alone would be useless for the rate limiter below (every
+		# visitor would appear to share Cloudflare's IP) and for Jellyfin's own
+		# client-IP logging. Listing Cloudflare's published ranges as trusted lets
+		# Caddy pull the real IP from the CF-Connecting-IP header instead, exposed
+		# as the {client_ip} placeholder. Ranges from https://www.cloudflare.com/ips/
+		# -- these change rarely, but re-check that page if Cloudflare IPs ever stop
+		# matching (Caddy fails safe either way: an unrecognized peer just falls
+		# back to being treated as the direct client, it doesn't break anything).
+		trusted_proxies static \
+ 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 \
+ 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 \
+ 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 \
+ 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 \
+ 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 \
+ 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+		client_ip_headers CF-Connecting-IP
+	}
+}
+
+# Reusable guard for the LAN-only routes below: port 80 is never forwarded at
+# the router, so these are already unreachable from the internet -- this is
+# defense in depth against a future port-80 forward or misconfiguration, not
+# the primary control. Deliberately not applied to the public
+# https://watch.{$DOMAIN} block below, or to the internal :8090 seedbox shim
+# (unpublished, reached container-to-container only).
+(lanonly) {
+	@notlan not remote_ip private_ranges
+	respond @notlan 403
 }
 
 http://jellyseerr.{$DOMAIN}, http://{$DOMAIN} {
+	import lanonly
 	reverse_proxy jellyseerr:5055
 }
 
+# LAN-only route -- kept exactly as-is so every existing TV/device pointed at
+# this hostname over plain HTTP keeps working unchanged.
 http://watch.{$DOMAIN} {
 	reverse_proxy host.docker.internal:8096
 }
 
+# Public route: real Let's Encrypt cert via the DNS-01 challenge above, reached
+# from outside the house once the router forwards 443 to this host. Coexists
+# with the http:// block above rather than replacing it -- both stay active.
+https://watch.{$DOMAIN} {
+	# General ceiling is generous enough for normal browsing/streaming (a single
+	# Jellyfin session fans out into many small image/segment requests), but
+	# still blunts scripted scanning against the one route on the internet.
+	# The login zone is tighter and specifically targets the auth endpoint,
+	# since that's what credential-stuffing tools actually hammer.
+	rate_limit {
+		zone watch_general {
+			key {client_ip}
+			events 300
+			window 1m
+		}
+		zone watch_login {
+			match {
+				path /Users/AuthenticateByName
+			}
+			key {client_ip}
+			events 10
+			window 1m
+		}
+	}
+	reverse_proxy host.docker.internal:8096 {
+		header_up X-Real-IP {client_ip}
+	}
+}
+
 http://prowlarr.{$DOMAIN} {
+	import lanonly
 	reverse_proxy prowlarr:9696
 }
 
 http://sonarr.{$DOMAIN} {
+	import lanonly
 	reverse_proxy sonarr:8989
 }
 
 http://radarr.{$DOMAIN} {
+	import lanonly
 	reverse_proxy radarr:7878
 }
 
 http://bazarr.{$DOMAIN} {
+	import lanonly
 	reverse_proxy bazarr:6767
 }
 
 # Local-mode only -- harmless if the qbittorrent container isn't running
 # (COMPOSE_PROFILES doesn't include "local"), this route just won't connect.
 http://qbittorrent.{$DOMAIN} {
+	import lanonly
 	reverse_proxy qbittorrent:8080
 }
 

@@ -48,7 +48,7 @@ setup differs.
 | Radarr | Movie search/grab/organize | 7878 | `radarr.<domain>` |
 | Bazarr | Subtitle fetching for Sonarr/Radarr libraries | 6767 | `bazarr.<domain>` |
 | Seerr | Request front-end — search a title, hit request, it flows to Sonarr/Radarr | 5055 | `jellyseerr.<domain>` |
-| Caddy | Reverse proxy — drops port numbers, gives every service above a clean hostname, and (internal-only) injects Basic Auth for the seedbox | 80 | `watch.<domain>` also routes here to the host Jellyfin install |
+| Caddy | Reverse proxy — drops port numbers, gives every service above a clean hostname, (internal-only) injects Basic Auth for the seedbox, and terminates the public HTTPS route to Jellyfin | 80, 443 | `watch.<domain>` also routes here to the host Jellyfin install, over both LAN HTTP and public HTTPS — see section 6 |
 | qBittorrent | **`local` mode only** — the actual torrent client, no seedbox | 8080 | `qbittorrent.<domain>` |
 
 In `seedbox` mode the actual torrent clients (qBittorrent and Transmission) run on the
@@ -299,36 +299,123 @@ other device), add hosts-file entries instead of relying on DNS for that one mac
    ```
 4. Save, then `ipconfig /flushdns`
 
-### Why plain HTTP, not HTTPS
+### Why plain HTTP, not HTTPS (for the LAN-only routes)
 
 A real domain (or nip.io) is being used here, but these subdomains often only resolve on
 your LAN — Let's Encrypt can't issue a normal certificate for a name it can't reach, and
 a self-signed cert would just bring back the "not secure" warning until every device
 trusted a custom root CA. Since the whole point here was zero extra setup per device,
-the `Caddyfile`'s `auto_https off` global option keeps Caddy from touching port 443 or
-attempting any TLS at all. If a browser's "HTTPS-first" mode tries `https://` before
-`http://`, it gets connection-refused (nothing is listening on 443) rather than a
-certificate warning, and falls back to plain HTTP automatically.
+the `Caddyfile`'s global `auto_https disable_redirects` option keeps Caddy from ever
+synthesizing an HTTP→HTTPS redirect on port 80 — every `*.{$DOMAIN}` route except
+`watch.{$DOMAIN}` stays plain HTTP with no certificate involved. If a browser's
+"HTTPS-first" mode tries `https://` before `http://` for one of these, it gets
+connection-refused (nothing is listening on 443 for them) rather than a certificate
+warning, and falls back to plain HTTP automatically.
+
+`watch.{$DOMAIN}` is the one exception, covered next — it has both an `http://` block
+(LAN, unchanged) and a real `https://` block with a genuine Let's Encrypt cert (public).
 
 ---
 
 ## 6. Access outside your home network
 
-Two options, different risk profiles:
+Two options, different risk profiles. This stack uses the second one for Jellyfin
+specifically; the *arr apps stay LAN-only either way.
 
-**Tailscale (recommended).** Private mesh VPN between your devices — nothing exposed to
-the public internet. Install on your PC and phone, same account on both, and your phone
-reaches the stack as if it were on your home WiFi from anywhere. None of these apps
-(Sonarr, Radarr, Prowlarr) are built with "hostile public internet" as a threat model —
-several have had real CVEs over the years — so keeping them reachable only via a private
-mesh instead of an open port is the safer default.
+**Tailscale.** Private mesh VPN between your devices — nothing exposed to the public
+internet. Install on your PC and phone, same account on both, and your phone reaches the
+stack as if it were on your home WiFi from anywhere. None of these apps (Sonarr, Radarr,
+Prowlarr) are built with "hostile public internet" as a threat model — several have had
+real CVEs over the years — so keeping them reachable only via a private mesh instead of
+an open port is the safer default. Downside: every device that wants access needs the
+Tailscale client installed, which rules out most TVs.
 
-**Port forward + real domain + Caddy TLS.** Forward port 443 on your router to Caddy,
-get a domain, Caddy auto-issues certs via Let's Encrypt. More convenient, meaningfully
-riskier — only worth doing for Jellyfin/Seerr specifically, keep the *arr apps reachable
-only from inside the network either way. The seedbox's own torrent clients are already
-reached over the internet directly (that's the nature of a seedbox) and have their own
-auth in front — not something this stack's network exposure affects either way.
+**Port forward + real domain + Caddy TLS (what `watch.{$DOMAIN}` uses).** Only Jellyfin
+is exposed this way — the *arr apps are never forwarded, and the `lanonly` snippet in the
+`Caddyfile` blocks them at the app layer too as defense in depth (see below). The seedbox's
+own torrent clients are already reached over the internet directly (that's the nature of
+a seedbox) and have their own auth in front — not something this stack's network exposure
+affects either way.
+
+**Why DNS-01, not the more common HTTP-01 challenge:** HTTP-01 needs port 80 reachable
+from the internet for Let's Encrypt to hit `/.well-known/acme-challenge/...`. Forwarding
+80 would put every plain-HTTP LAN route (`sonarr.{$DOMAIN}`, `radarr.{$DOMAIN}`, etc.) on
+the public internet the moment the router forwards it — nothing in Caddy's config would
+stop that on its own. DNS-01 instead proves domain ownership by creating a TXT record via
+the DNS provider's API, so **only port 443 ever needs forwarding**, and port 80 can stay
+unforwarded permanently — every LAN-only route is then unreachable from outside by
+construction, not just by convention.
+
+Setup:
+
+1. **Register a real domain** if you don't already own one — this stack's own reference
+   deployment uses `correll.tv`. A domain you already use for the LAN-only hostnames
+   (section 5) works fine; the public route is one additional hostname on it
+   (`watch.{$DOMAIN}`), not a second domain.
+2. **Add the domain to Cloudflare** (free plan) and point the registrar's nameservers at
+   Cloudflare's. This is what makes DNS-01 possible — Caddy's `acme_dns cloudflare`
+   directive needs the zone to actually live there.
+3. **Create one DNS record**, `watch` → `A` → your current WAN IP (find it at
+   `https://api.ipify.org`). Either DNS-only (grey cloud) or **Proxied** (orange cloud,
+   what this stack's reference deployment uses) works — DNS-01 only ever touches the
+   separate `_acme-challenge` TXT record, so the A record's proxy status has no effect on
+   cert issuance or renewal either way. Proxied does mean routing your video through
+   Cloudflare's CDN, which is against their free/Pro tier's terms for sustained streaming
+   use; low-risk for a single person's personal remote access, but worth knowing going in.
+   In exchange you get: your real origin IP hidden from internet-wide scanning, plus free
+   WAF/bot-fight-mode. If proxied, Caddy needs to trust Cloudflare's IP ranges to recover
+   the real visitor IP from the `CF-Connecting-IP` header — see the `trusted_proxies`
+   block in the Caddyfile's global options (ranges from
+   `https://www.cloudflare.com/ips/`, ***not*** something `caddy fmt` or Cloudflare keeps
+   in sync automatically — re-check that page occasionally).
+4. **Create a scoped API token**: Cloudflare dashboard → My Profile → API Tokens →
+   Create Token → permissions `Zone:DNS:Edit`, resource restricted to this one zone. Put
+   it in `.env` as `CF_API_TOKEN`, along with `ACME_EMAIL`, `CF_ZONE`, and
+   `DDNS_RECORD=watch.{$DOMAIN}` (see `.env.example` for the full description of each).
+5. **Free port 443 on the host for Caddy** if something else already owns it — this
+   stack's Pi-hole did (its HTTPS block-page listener), remapped to `8443:443` in its own
+   `docker-compose.yml`. Check `docker ps` for anything else publishing `443`.
+6. **Bring Caddy up with the new build**: `docker compose up -d --build caddy`. It now
+   builds from `Dockerfile.caddy` (adds the Cloudflare DNS module and the rate-limit
+   plugin via `xcaddy`) instead of the stock `caddy:latest` image, and persists certs in
+   the `caddy_data` named volume —
+   check `docker logs caddy` for `certificate obtained successfully`. That volume is what
+   prevents a routine `docker compose up --force-recreate` from burning through Let's
+   Encrypt's 5-duplicate-certs-per-week rate limit by re-issuing every time.
+7. **Reserve this PC's LAN IP** in your router (same step as section 5) and **forward TCP
+   443 only** to it. Leave 80 unforwarded.
+8. **Keep the DNS record current** — residential WAN IPs aren't guaranteed static.
+   `scripts/ddns-update.py` checks the current IP against Cloudflare's record every run
+   and PATCHes only on a mismatch; best-effort ntfy notification on change, same pattern
+   as `scripts/rclone-sync.py`. Schedule it every few minutes the same way as the other
+   scheduled scripts in this repo (Task Scheduler, `pythonw.exe "C:\path\to\repo\scripts\
+   ddns-update.py"` — see section 9's rclone step for why `pythonw.exe`, not `python.exe`
+   or a raw `.exe`, is the action to use).
+9. **Point Jellyfin's own Known Proxies / Published Server URLs at Caddy** — Dashboard →
+   Networking, native Jellyfin install. Without **Known proxies** set to the address
+   Caddy's requests actually arrive from, every remote session shows Caddy's IP instead of
+   the real client's. **Published Server URLs** can stay per-subnet
+   (`192.168.x.0/24=http://192.168.x.x:8096`, `all=https://watch.{$DOMAIN}`) so LAN clients
+   keep using the LAN URL unchanged. Leave `EnableHttps`/`RequireHttps` off — TLS
+   terminates at Caddy, Jellyfin stays plain HTTP behind it.
+
+**Rate limiting.** `Dockerfile.caddy` also builds in `mholt/caddy-ratelimit`, and the
+`https://watch.{$DOMAIN}` block in the Caddyfile applies it per-visitor: a generous
+general ceiling (300 req/min) that shouldn't affect real browsing/streaming, plus a
+tighter zone (10 req/min) scoped to Jellyfin's `/Users/AuthenticateByName` login endpoint
+specifically, to blunt credential-stuffing. Both are keyed on `{client_ip}`, not
+`{remote_host}` — with Cloudflare proxying in front, every request's TCP peer is a
+Cloudflare edge IP, so keying on the raw peer would rate-limit everyone as if they were
+one visitor.
+
+No IP allowlist is applied yet — Jellyfin's own login plus the TLS connection and the
+rate limiter above are the whole access-control story for now. Worth doing before going
+live: update Jellyfin, confirm the admin password is strong and not reused, turn off
+Quick Connect if unused, and confirm Jellyfin's own login-attempt lockout is on. An
+IP-based allowlist (Caddy `remote_ip` matcher, or a Windows Firewall rule if Docker
+Desktop's networking turns out to mangle source IPs — check `docker logs caddy` for the
+real client IP on an external request before relying on either) is a planned fast-follow,
+not yet implemented.
 
 ---
 

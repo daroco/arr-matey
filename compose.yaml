@@ -141,17 +141,38 @@ services:
       - radarr
     restart: unless-stopped
 
+  # Built from Dockerfile.caddy (not the stock caddy:latest image) to add the
+  # Cloudflare DNS module -- needed for the DNS-01 ACME challenge that gets
+  # watch.${DOMAIN} a real Let's Encrypt cert without forwarding port 80 from
+  # the router (see README section 6 and the Caddyfile's global block).
+  # 443 is published alongside 80 for that same public HTTPS route; 80 stays
+  # published on the host (LAN hostnames still need it) but is never forwarded
+  # at the router, so it's unreachable from the internet either way.
+  # caddy_data holds the actual certificates -- without it, every container
+  # recreate re-issues from Let's Encrypt and risks the 5-duplicate-certs/week
+  # rate limit.
   caddy:
-    image: caddy:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
     container_name: caddy
     ports:
       - "80:80"
+      - "443:443"
     environment:
       - DOMAIN=${DOMAIN}
       - SEEDBOX_HOST=${SEEDBOX_HOST}
       - SEEDBOX_BASIC_AUTH=${SEEDBOX_BASIC_AUTH}
+      - ACME_EMAIL=${ACME_EMAIL}
+      - CF_API_TOKEN=${CF_API_TOKEN}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
     depends_on:
       - jellyseerr
     restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
