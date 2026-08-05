@@ -16,6 +16,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
+from .clients import local_fs
 from .models import Diagnosis, Severity
 
 log = logging.getLogger("dashboard.rules")
@@ -131,6 +132,42 @@ def r_awaiting_rclone(attempt, db, cfg, staging_root, wrapper_log_summary):
     )
 
 
+def r_unextracted_archive(attempt, staging_root, arr):
+    """Confirmed live against real cases (Scrubs S08, and several MythBusters S20
+    episodes sitting in staging right now): an old scene-release packaging style
+    splits the real episode video into multi-part RAR archives instead of shipping a
+    plain video file. Nothing in this pipeline auto-extracts these, so Sonarr/Radarr
+    only ever see a small "sample" preview (if one even exists) and refuse to import,
+    with no indication the real content is sitting compressed right next to it.
+
+    Gated on `not was_imported` for the same reason r_awaiting_rclone is: once
+    Sonarr/Radarr's own import moves the extracted video into the library, staging
+    only has the leftover RAR volumes left -- without this guard the rule would
+    misfire forever on something already successfully handled (confirmed live: this
+    exact false-positive happened on Scrubs immediately after a successful import)."""
+    if attempt.torrent is None or attempt.torrent.state_normalized not in ("seeding", "complete_paused"):
+        return None  # don't suggest extracting a still-downloading, possibly-incomplete archive
+    was_imported = any(s.stage.value == "imported" and s.status == "done" for s in attempt.stages)
+    if was_imported:
+        return None
+    rars = local_fs.find_unextracted_rars(attempt.torrent.name, staging_root)
+    if not rars:
+        return None
+    return Diagnosis(
+        rule_id="unextracted_archive", severity=Severity.WARNING,
+        headline="Downloaded, but still RAR-archived",
+        detail=f"{len(rars)} file(s) are sitting as unextracted multi-part RAR archives -- an "
+               f"old scene-release packaging style nothing in this pipeline auto-extracts. The "
+               f"real video is compressed inside; only a small sample (if any) is visible to "
+               f"Sonarr/Radarr right now, which is why this looks stuck rather than obviously "
+               f"\"just needs unzipping.\"",
+        evidence=[{"label": "unextracted archive", "detail": str(r)} for r in rars[:6]],
+        suggested_actions=[("local_extract_archive", {
+            "torrent_name": attempt.torrent.name, "client": attempt.torrent.client, "arr": arr,
+        })],
+    )
+
+
 def r_import_failed(attempt, snap):
     was_imported = False
     for s in attempt.stages:
@@ -239,7 +276,7 @@ def r_download_mode_mismatch(cfg):
                       headline="DOWNLOAD_MODE / COMPOSE_PROFILES mismatch", detail=msg)
 
 
-def evaluate_attempt(attempt, db, cfg, is_seedbox, wrapper_log_summary=None):
+def evaluate_attempt(attempt, db, cfg, is_seedbox, wrapper_log_summary=None, arr="sonarr"):
     """Runs the attempt-level rules in priority order, suppressor first. Returns as
     soon as the suppressor fires (a healthy state shouldn't also show a stall
     warning) -- otherwise collects every rule that fires, since e.g. thin-swarm and
@@ -254,6 +291,15 @@ def evaluate_attempt(attempt, db, cfg, is_seedbox, wrapper_log_summary=None):
         out.append(d)
     if is_seedbox:
         staging_root = cfg.staging_root_qbt if (attempt.torrent and attempt.torrent.client == "qbittorrent") else cfg.staging_root_transmission
+        # Local mode isn't covered here -- its qBittorrent writes straight into
+        # MEDIA_ROOT/downloads with no separate staging/sync stage, and this rule
+        # hasn't been exercised against that path yet (every live case confirmed so
+        # far is seedbox mode). Same RAR-packaging problem could in principle happen
+        # there too; scope this to seedbox mode until there's a real case to verify
+        # against, same standard the rest of this rule set holds itself to.
+        d = r_unextracted_archive(attempt, staging_root, arr)
+        if d:
+            out.append(d)
         d = r_awaiting_rclone(attempt, db, cfg, staging_root, wrapper_log_summary)
         if d:
             out.append(d)
@@ -287,8 +333,9 @@ def r_never_grabbed(trace):
 
 
 def evaluate_trace(trace, snap, db, cfg, is_seedbox, wrapper_log_summary=None):
+    arr = "radarr" if trace.media_type == "movie" else "sonarr"
     for attempt in trace.attempts.values():
-        attempt.diagnoses = evaluate_attempt(attempt, db, cfg, is_seedbox, wrapper_log_summary)
+        attempt.diagnoses = evaluate_attempt(attempt, db, cfg, is_seedbox, wrapper_log_summary, arr)
         d = r_import_failed(attempt, snap)
         if d:
             attempt.diagnoses.append(d)

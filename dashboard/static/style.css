@@ -22,6 +22,9 @@ header { display: flex; align-items: center; gap: 1rem; padding: 1rem 0; border-
 header h1 { font-size: 1.1rem; margin: 0; }
 header .spacer { flex: 1; }
 header .whoami { color: var(--muted); font-size: 0.85rem; }
+.bell-link { position: relative; display: inline-block; font-size: 1.2rem; line-height: 1; text-decoration: none; }
+.bell-link:hover { text-decoration: none; opacity: 0.8; }
+.bell-badge { position: absolute; top: -0.5rem; right: -0.7rem; padding: 0 0.35rem; font-size: 0.65rem; line-height: 1.4; }
 
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
@@ -85,6 +88,14 @@ pre.log { background: #0d0f12; padding: 0.75rem; border-radius: 4px; max-height:
   max-width: 320px;
 }
 .service-card:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(0,0,0,.35); }
+/* Torrent clients grid: always exactly 1-2 cards (qBittorrent always, Transmission
+   only in seedbox mode) -- unlike the Services grid, there's no "leftover card"
+   case to guard against here, so the max-width cap above is actively wrong for it
+   (confirmed live: it left half the row empty on desktop with only 2 cards). Card
+   stretches to fill its full grid track instead -- true 50/50 on wide screens,
+   collapses to one full-width column on narrow ones via the same auto-fit minmax. */
+.torrent-grid { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.torrent-grid .service-card { max-width: none; }
 .service-grid .service-card:nth-of-type(6n+2) { border-top-color: var(--acc2); }
 .service-grid .service-card:nth-of-type(6n+3) { border-top-color: var(--acc3); }
 .service-grid .service-card:nth-of-type(6n+4) { border-top-color: var(--acc4); }

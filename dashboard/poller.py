@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from .config import Config
 from .snapshot import fetch_snapshot
 from . import state as state_mod
+from . import sweep
 
 log = logging.getLogger("dashboard.poller")
 
@@ -33,6 +34,7 @@ class Poller:
         self._task = None
         self._tick = 0
         self._env_mtime = cfg.env_mtime()
+        self._notify_task = None
 
     async def poll_once(self):
         # Tier B (torrent clients) at 2x the base interval, tier C (history/requests)
@@ -41,6 +43,12 @@ class Poller:
         # cheap.
         fetch_history = self._tick % 6 == 0
         fetch_slow = self._tick % 30 == 0
+        # Tier for the notification sweep -- ratio recomputed every tick (not fixed
+        # at startup) so editing DASHBOARD_NOTIFY_POLL_SECONDS/DASHBOARD_POLL_SECONDS
+        # in .env takes effect on the next reload without a restart, same as every
+        # other cfg-driven cadence here.
+        notify_ticks = max(1, self.cfg.notify_poll_seconds // self.cfg.poll_seconds)
+        fetch_notify = self._tick % notify_ticks == 0
         self._tick += 1
 
         if self.cfg.env_mtime() != self._env_mtime:
@@ -67,6 +75,9 @@ class Poller:
                 snap.seerr_settings_radarr = self.snapshot.seerr_settings_radarr
         self.snapshot = snap
 
+        if fetch_notify:
+            self._start_notify_sweep(snap)
+
         await asyncio.to_thread(state_mod.sweep_snapshot, self.db, snap)
         await asyncio.to_thread(self.db.prune, self.cfg.retention_days)
         await asyncio.to_thread(
@@ -76,6 +87,25 @@ class Poller:
             (datetime.now(timezone.utc).isoformat(),),
         )
         self.db.conn.commit()
+
+    def _start_notify_sweep(self, snap):
+        # A real deep-trace sweep across every matched request (tens of seconds to a
+        # couple minutes on this stack's ~150 requests) -- run as its own background
+        # task rather than awaited inline, so it can't delay the fast 30s tiers this
+        # loop also owns. Guarded against overlap: if a sweep from a previous tick
+        # is still running when the next notify tick comes around, skip starting a
+        # second one rather than piling up concurrent sweeps.
+        if self._notify_task is not None and not self._notify_task.done():
+            log.info("notification sweep still running from a previous tick, skipping this one")
+            return
+
+        async def run():
+            try:
+                await sweep.run_sweep(snap, self.cfg, self.db, notify=True)
+            except Exception:
+                log.exception("notification sweep failed")
+
+        self._notify_task = asyncio.create_task(run())
 
     async def run_forever(self):
         while True:
@@ -95,5 +125,11 @@ class Poller:
             self._task.cancel()
             try:
                 await self._task
+            except asyncio.CancelledError:
+                pass
+        if self._notify_task:
+            self._notify_task.cancel()
+            try:
+                await self._notify_task
             except asyncio.CancelledError:
                 pass

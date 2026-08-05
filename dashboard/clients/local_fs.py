@@ -57,3 +57,38 @@ def tail_cleanup_log(path, max_lines=200):
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-max_lines:]
     last_run = lines[-1] if lines else None
     return lines, last_run
+
+
+VIDEO_EXTS = {".avi", ".mkv", ".mp4", ".m4v", ".ts", ".wmv"}
+
+
+def find_unextracted_rars(torrent_name, staging_root):
+    """Confirmed live against a real case (Scrubs S08, an old scene release):
+    old-style releases sometimes split the real episode video into multi-part RAR
+    archives (a .rar plus .r00, .r01, ... volumes) instead of shipping a plain video
+    file. Nothing in this pipeline (qBittorrent, rclone, Sonarr) auto-extracts these,
+    so Sonarr only ever sees the small "sample" preview file and refuses to import,
+    with no indication that the real content is sitting compressed right next to it.
+
+    Walks the staging path (root file/dir, plus one level of subfolders -- matching
+    the real per-episode-subfolder structure a season-pack release like this has) for
+    a first-volume ".rar" file with no already-extracted video (matching stem, common
+    video extension) sitting next to it. Returns a list of absolute paths to those
+    first-volume .rar files -- each is a real, distinct thing to extract.
+    """
+    root = staging_path_for(torrent_name, staging_root)
+    if not root.exists():
+        return []
+    dirs_to_check = [root] if root.is_file() else [root] + [d for d in root.iterdir() if d.is_dir()]
+    found = []
+    for d in dirs_to_check:
+        if not d.is_dir():
+            continue
+        for rar in d.glob("*.rar"):
+            stem = rar.stem.lower()
+            already_extracted = any(
+                f.stem.lower() == stem and f.suffix.lower() in VIDEO_EXTS for f in d.iterdir()
+            )
+            if not already_extracted:
+                found.append(rar)
+    return found

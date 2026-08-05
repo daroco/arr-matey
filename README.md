@@ -824,14 +824,54 @@ episode.
   "done," not a stall. Getting this backwards would make the dashboard cry wolf on every
   successful download, since that's the expected terminal state for anything with
   `max_ratio_act=0` (Pause, see section 9's warnings).
+- **Downloaded, but still RAR-archived** — the torrent finished and is seeding, but
+  Sonarr/Radarr never imports it. Old scene-release packaging split the real video into
+  multi-part RAR archives (`.rar` + `.r00`, `.r01`, ...) that nothing in this pipeline
+  auto-extracts; only a small sample (if any) is visible to the *arr apps, which
+  correctly reject it as a Sample rather than the real episode/movie — looks like a dead
+  end with no obvious cause unless you know to check staging by hand. Confirmed live
+  against two independent real cases (Scrubs S08, MythBusters S20E02). The fix button
+  extracts every unextracted first-volume `.rar` it finds with 7-Zip, then triggers a
+  Sonarr/Radarr rescan (`DownloadedEpisodesScan`/`DownloadedMoviesScan`) so the
+  newly-visible files get imported.
 
 **Fix buttons** (each is preview-then-confirm — nothing mutates until you click confirm a
 second time): push Seerr's corrected root folder, retry a failed request, force a Prowlarr
 indexer resync, raise an indexer's Minimum Seeders, confirm a Manual Import, search live
-and show why nothing's grabbed, monitor a series' real seasons and search, or run
-`rclone-sync.py`/`seedbox-cleanup.py` immediately instead of waiting for their schedule.
-The cleanup button's preview is literally that script's own `--dry-run` output — nothing
-to reimplement, it already makes the exact judgment call the preview needs.
+and show why nothing's grabbed, monitor a series' real seasons and search, extract
+unextracted RAR archives and import, or run `rclone-sync.py`/`seedbox-cleanup.py`
+immediately instead of waiting for their schedule. The cleanup button's preview is
+literally that script's own `--dry-run` output — nothing to reimplement, it already makes
+the exact judgment call the preview needs.
+
+### Push notifications
+
+A background sweep (`dashboard/sweep.py`, run from the poller on its own tier — see
+`DASHBOARD_NOTIFY_POLL_SECONDS` below) runs the same real diagnosis engine as the
+"stalled only" filter across every matched request, on its own schedule, independent of
+whether anyone's looking at the page. The first time a diagnosis appears (or re-appears
+after having cleared), it fires a push via ntfy — reusing the exact same `NTFY_SERVER`/
+`NTFY_TOPIC` vars `scripts/rclone-sync.py` already uses, so anything already subscribed
+on your phone just starts receiving these too. A diagnosis still open on the next sweep
+does **not** re-notify; if it stops firing (fixed, or the underlying condition resolved)
+its record clears, so if the exact same problem shows up again later it's treated as new
+and notifies again rather than staying silently suppressed forever.
+
+Notifications are **grouped and batched by title, not sent one per diagnosis** — the
+exact same fix `scripts/rclone-sync.py` already applies to its own per-file notifications
+(see that script's `flush_pending`). A season pack spans several attempts (one per
+episode grab), each of which can independently trip the same rule — without batching, one
+real "this show is stuck" situation for a multi-episode season pack turned into a wall of
+near-duplicate pushes (confirmed live: 8 separate pushes for one title before this fix).
+Every diagnosis a rule returns is automatically eligible for this — nothing extra to wire
+up when adding a new rule, see `.claude/skills/dashboard-add-rule`.
+
+Every push is also mirrored in-app: the bell icon in the header (every page, via
+`/partials/notif-badge`) shows an unread count and links to `/notifications`, a full list
+of every batched notification ever sent, each linking back to the request it's about.
+Visiting the page clears the badge. This works independent of ntfy — leaving `NTFY_TOPIC`
+blank (a supported, real setup — see `.env.example`) still populates the in-app list, it
+just skips the actual push.
 
 ### The request list: filters, sorting, and service health
 
@@ -889,8 +929,12 @@ those mutate real Sonarr/Radarr/Seerr config and this is now reachable from the 
    5) if you want it reachable by name from inside the house too, not just publicly.
 4. `.env`: `DASHBOARD_PORT` (default `8099`), `DASHBOARD_POLL_SECONDS` (default `30`),
    `DASHBOARD_HISTORY_POLL_SECONDS` (default `180`), `DASHBOARD_STALL_MINUTES` (default
-   `60`), `DASHBOARD_RETENTION_DAYS` (default `90`) — see `.env.example`. No Jellyfin
-   connection vars needed; it reads them from Seerr's own `settings.json`.
+   `60`), `DASHBOARD_RETENTION_DAYS` (default `90`), `DASHBOARD_NOTIFY_POLL_SECONDS`
+   (default `900` — how often the background notification sweep runs, see "Push
+   notifications" above) — see `.env.example`. No Jellyfin connection vars needed; it
+   reads them from Seerr's own `settings.json`. Push notifications reuse `NTFY_SERVER`/
+   `NTFY_TOPIC` from section 9 — leave `NTFY_TOPIC` blank to disable pushes entirely
+   without affecting the in-app notifications list.
 5. **Run it**: `python -m dashboard.run` (needs `-m`, not a bare file path — it's a
    package, unlike the standalone `scripts/*.py` files). For it to survive logoff/reboot,
    register it as a Task Scheduler task the same way as the other scheduled scripts, but
@@ -908,6 +952,18 @@ those mutate real Sonarr/Radarr/Seerr config and this is now reachable from the 
    an At-log-on task isn't always permitted from a standard session.)
 6. Check `<CONFIG_ROOT>\dashboard\dashboard.log` if it doesn't come up — same
    `RotatingFileHandler` + startup-exception pattern as every other scheduled script here.
+7. **Restarting after a code change: use `Stop-ScheduledTask`/`Start-ScheduledTask`, not
+   `Stop-Process`.** Once registered, the task runs under Task Scheduler's own session
+   context — `Get-Process python | Stop-Process -Force` from an ordinary shell can fail
+   silently against it (the process survives, `Start-ScheduledTask` afterward then fails
+   to bind the port since the old process still holds it, and *that* fails silently too).
+   Confirmed live: this left a stale process serving hours-old code with no obvious error
+   until a genuinely new route 404'd. `Stop-ScheduledTask -TaskName "acquisitions-dashboard"`
+   followed by `Start-ScheduledTask -TaskName "acquisitions-dashboard"` works regardless of
+   session context; verify via `dashboard.log`'s `Started server process [PID]` line and a
+   `curl http://127.0.0.1:8099/health` check rather than `Get-Process`, which doesn't
+   reliably show Task-Scheduler-launched processes from an unrelated shell anyway. See the
+   `dashboard-restart` skill.
 
 ### Known limits
 

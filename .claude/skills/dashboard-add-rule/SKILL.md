@@ -47,7 +47,7 @@ through this exact loop (see below), and there will be more.
    `dashboard-restart`) -- not a synthetic test. Every rule in this file was verified
    against a real stuck request before being considered done.
 
-## Three real, worked examples (read these before writing a new one)
+## Four real, worked examples (read these before writing a new one)
 
 - **Season-number mismatch** (`correlate.py`'s `season_number_mismatch` diagnosis +
   `arr_actions.py`'s `arr_fix_season_mismatch`): a show (MythBusters) where Sonarr
@@ -68,8 +68,37 @@ through this exact loop (see below), and there will be more.
   fix -- it's a live `GET /api/v3/release` interactive search that tells you the
   actual answer (nothing exists on any indexer, vs. releases exist but got rejected
   and why, vs. releases exist and *weren't* rejected).
+- **Unextracted archive** (`rules.py`'s `r_unextracted_archive` + `extract_actions.py`'s
+  `local_extract_archive`): a torrent (Scrubs S08, later confirmed generalizing correctly
+  against a second, independent case — MythBusters S20E02) that finished and is seeding,
+  but Sonarr/Radarr never imports it — old scene-release packaging split the real video
+  into multi-part RAR archives (`.rar` + `.r00`, `.r01`, ...) that nothing in this
+  pipeline auto-extracts; only a small sample (if any) is visible to the *arr apps, which
+  correctly reject it as a Sample rather than the real episode. Looks like a dead end with
+  no obvious cause. Fix: extract with 7-Zip (`local_fs.find_unextracted_rars` walks
+  staging one level deep, matching a season pack's per-episode-subfolder layout, looking
+  for a first-volume `.rar` with no adjacent already-extracted video), then trigger a
+  Sonarr/Radarr rescan (`DownloadedEpisodesScan`/`DownloadedMoviesScan`) so the newly
+  visible files get imported. Gated on `not was_imported` — confirmed live that without
+  this guard, the rule misfires forever on an already-successfully-imported download,
+  since Sonarr's own import moves the extracted video out of staging, leaving only the
+  RAR volumes behind and making "no adjacent video" look true again for the wrong reason.
 
-## What ties all three together
+## Notifications piggyback on this for free
+
+Every diagnosis a rule returns is automatically eligible for a push notification —
+`dashboard/sweep.py`'s background sweep (see `poller.py`, gated by
+`DASHBOARD_NOTIFY_POLL_SECONDS`) runs the same rule evaluation as the on-demand "stalled
+only" filter, persists results via `state.py`'s `upsert_diagnosis()`/`clear_diagnosis()`,
+and fires an ntfy push (batched per title, not per diagnosis — see `sweep.py`'s
+`_flush_pending`, mirroring `scripts/rclone-sync.py`'s own per-file-notification fix) the
+first time a diagnosis appears. Every push is also mirrored in-app (`state.py`'s
+`insert_notification`/`list_notifications` → the bell icon in `base.html`'s header and
+the `/notifications` page), so the two never show a different history of the same event.
+There's nothing extra to wire up when adding a new rule — if it returns a non-OK
+`Diagnosis`, it already gets swept, notified, and listed.
+
+## What ties all four together
 
 Every one of these was previously either a **misleading static message** or a
 **contradictory-looking pair of labels** (see also: the "processing" vs. "never

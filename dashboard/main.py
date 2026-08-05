@@ -5,7 +5,6 @@ starts uvicorn -- kept separate so tests (or a future CLI) can import create_app
 without also binding a port.
 """
 
-import asyncio
 import json
 import logging
 import secrets
@@ -17,7 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import correlate, rules
+from . import correlate, rules, sweep
 from . import state as state_mod
 from .actions import ACTIONS
 from .auth import COOKIE_NAME, AuthState, require_admin, require_session
@@ -121,47 +120,13 @@ def create_app():
         service_health = correlate.build_service_health(snap, db) if snap else []
         return rows, global_diags, health, service_health
 
-    # Bounds how many concurrent deep traces the "stalled only" filter fires at
-    # Sonarr/Radarr/Prowlarr at once -- unbounded gather() over ~150 requests would
-    # mean 150 simultaneous history/episode calls against a home-lab instance, which
-    # is closer to a self-inflicted DoS than a filter.
-    STALL_CHECK_CONCURRENCY = 8
-
-    async def _compute_stalled_ids(snap):
-        candidate_ids = correlate.matched_request_ids(snap)
-        is_seedbox = cfg.download_mode != "local"
-        wrapper_summary, _ = local_fs.tail_wrapper_log(cfg.rclone_wrapper_log) if is_seedbox else (None, [])
-        sem = asyncio.Semaphore(STALL_CHECK_CONCURRENCY)
-
-        async def check(request_id):
-            # One slow/failed Sonarr or Radarr call must not take the whole filter
-            # down -- same guard() principle snapshot.py already applies to the
-            # background poller. Confirmed live: a real 30s timeout from Sonarr
-            # (under heavy load from an unrelated full-series search) crashed the
-            # entire gather() before this try/except existed.
-            async with sem:
-                try:
-                    trace = await asyncio.to_thread(correlate.build_trace_detail, request_id, snap, cfg)
-                except Exception:
-                    log.warning(f"stalled-check: request {request_id} failed to trace, skipping", exc_info=True)
-                    return None
-                if trace is None:
-                    return None
-                trace = rules.evaluate_trace(trace, snap, db, cfg, is_seedbox, wrapper_summary)
-                problems = list(trace.diagnoses) + [d for att in trace.attempts.values() for d in att.diagnoses]
-                has_problem = any(d.severity.value not in ("ok",) for d in problems)
-                return request_id if has_problem else None
-
-        results = await asyncio.gather(*[check(rid) for rid in candidate_ids])
-        return {rid for rid in results if rid is not None}
-
     async def _filtered_rows(request: Request):
         snap = poller.snapshot
         rows = correlate.build_index(snap) if snap else []
         params = request.query_params
         stalled_ids = None
         if params.get("stalled") == "1" and snap:
-            stalled_ids = await _compute_stalled_ids(snap)
+            stalled_ids = await sweep.run_sweep(snap, cfg, db)
         return correlate.filter_and_sort_index(
             rows, q=params.get("q"), media_type=params.get("type"),
             status=params.get("status"), sort=params.get("sort"), stalled_ids=stalled_ids,
@@ -189,6 +154,27 @@ def create_app():
         await poller.poll_once()
         _, global_diags, health, service_health = _index_data()
         return tpl("partials/_health.html", request, global_diags=global_diags, health=health, service_health=service_health)
+
+    # -----------------------------------------------------------------
+    # Notifications -- the in-app mirror of sweep.py's ntfy pushes (see
+    # dashboard/notify.py, dashboard/sweep.py's _flush_pending). Viewable by any
+    # signed-in account, same as traces themselves; no fix actions live here so
+    # there's no reason to gate it behind require_admin.
+    # -----------------------------------------------------------------
+
+    @app.get("/partials/notif-badge", response_class=HTMLResponse)
+    async def partial_notif_badge(request: Request, session=Depends(require_session)):
+        unread = state_mod.count_unread_notifications(db)
+        return tpl("partials/_notif_badge.html", request, unread=unread)
+
+    @app.get("/notifications", response_class=HTMLResponse)
+    async def notifications_page(request: Request, session=Depends(require_session)):
+        rows = state_mod.list_notifications(db)
+        # Visiting the page is what clears the badge -- read_at is set for
+        # everything unread at the moment of this view, not per-row on click, so
+        # the count next reflects only what's actually new since the last visit.
+        state_mod.mark_all_notifications_read(db)
+        return tpl("notifications.html", request, rows=rows, session=session)
 
     # -----------------------------------------------------------------
     # Single request trace

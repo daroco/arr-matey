@@ -12,6 +12,9 @@
   <header>
     <h1><a href="/">acquisitions dashboard</a></h1>
     <div class="spacer"></div>
+    <div id="notif-badge-wrap" hx-get="/partials/notif-badge" hx-trigger="load, every 30s" hx-swap="innerHTML">
+      <a href="/notifications" class="bell-link" title="Notifications">&#128276;</a>
+    </div>
     <span class="whoami">{{ session['username'] }}{% if session['is_admin'] %} (admin){% endif %}</span>
     <form method="post" action="/logout" style="margin:0"><button class="secondary" type="submit">Log out</button></form>
   </header>

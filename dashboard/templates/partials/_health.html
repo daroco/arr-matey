@@ -37,7 +37,7 @@
 
 {% if torrent_clients %}
 <h4 class="section-label">Torrent clients</h4>
-<div class="service-grid">
+<div class="service-grid torrent-grid">
   {% for s in torrent_clients %}
     <div class="service-card {{ 'down' if not s.reachable else '' }}">
       <div class="service-name">

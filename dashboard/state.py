@@ -105,16 +105,18 @@ def upsert_diagnosis(db, scope_type, scope_key, rule_id, severity, detail_json):
                 "UPDATE diagnosis SET last_seen_at=?, severity=?, detail_json=? WHERE id=?",
                 (now, severity, detail_json, existing[0]),
             )
-            return existing[0], db.conn.execute(
+            first_seen_at = db.conn.execute(
                 "SELECT first_seen_at FROM diagnosis WHERE id=?", (existing[0],)
             ).fetchone()[0]
+            return existing[0], first_seen_at, False   # is_new=False -- already known, don't re-notify
         cur = db.conn.execute(
             """INSERT INTO diagnosis (scope_type, scope_key, rule_id, severity, first_seen_at,
                                        last_seen_at, detail_json)
                VALUES (?,?,?,?,?,?,?)""",
             (scope_type, scope_key, rule_id, severity, now, now, detail_json),
         )
-        return cur.lastrowid, now
+        return cur.lastrowid, now, True   # is_new=True -- either genuinely new, or re-firing after
+                                           # a previous clear_diagnosis() -- both are worth a fresh notification
 
 
 def clear_diagnosis(db, scope_type, scope_key, rule_id):
@@ -130,6 +132,37 @@ def open_diagnoses_for(db, scope_type, scope_key):
         "SELECT * FROM diagnosis WHERE scope_type=? AND scope_key=? AND cleared_at IS NULL",
         (scope_type, scope_key),
     ).fetchall()
+
+
+def insert_notification(db, *, title, request_id, severity, headline, message):
+    """One row per batched push actually sent (see sweep.py's _flush_pending) --
+    this is the in-app mirror of exactly what went out over ntfy, so the two never
+    show different histories of the same event."""
+    with db.conn:
+        db.conn.execute(
+            """INSERT INTO notification (created_at, title, request_id, severity, headline, message)
+               VALUES (?,?,?,?,?,?)""",
+            (utcnow_iso(), title, request_id, severity, headline, message),
+        )
+
+
+def list_notifications(db, limit=200):
+    return db.conn.execute(
+        "SELECT * FROM notification ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+
+
+def count_unread_notifications(db):
+    return db.conn.execute(
+        "SELECT COUNT(*) FROM notification WHERE read_at IS NULL"
+    ).fetchone()[0]
+
+
+def mark_all_notifications_read(db):
+    with db.conn:
+        db.conn.execute(
+            "UPDATE notification SET read_at = ? WHERE read_at IS NULL", (utcnow_iso(),)
+        )
 
 
 def record_source_health(db, source, ok, error=None, next_attempt_at=None):

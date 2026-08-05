@@ -94,6 +94,19 @@ class Config:
         self.history_poll_seconds = int(env.get("DASHBOARD_HISTORY_POLL_SECONDS", 180))
         self.stall_minutes = int(env.get("DASHBOARD_STALL_MINUTES", 60))
         self.retention_days = int(env.get("DASHBOARD_RETENTION_DAYS", 90))
+        # How often the background notification sweep runs the *real* diagnosis
+        # engine across every matched request -- this is the same expensive
+        # concurrent check the "stalled only" filter runs on demand, just automatic.
+        # Deliberately not the fast 30s poll tier: a full sweep hits Sonarr/Radarr/
+        # Prowlarr with a real deep-trace per request, same cost profile as the
+        # manual filter (tens of seconds to a couple minutes for this stack's ~150
+        # requests) -- see dashboard/poller.py.
+        self.notify_poll_seconds = int(env.get("DASHBOARD_NOTIFY_POLL_SECONDS", 900))
+        # Reused verbatim from scripts/rclone-sync.py/ddns-update.py's own vars --
+        # same topic, so whatever's already subscribed on your phone just starts
+        # receiving these too.
+        self.ntfy_server = env.get("NTFY_SERVER", "https://ntfy.sh")
+        self.ntfy_topic = env.get("NTFY_TOPIC", "")
 
         self.dashboard_config_dir = config_root / "dashboard"
         self.dashboard_config_dir.mkdir(parents=True, exist_ok=True)

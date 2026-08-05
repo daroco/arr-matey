@@ -93,6 +93,17 @@ CREATE TABLE IF NOT EXISTS action_run (
     log_tail TEXT
 );
 
+CREATE TABLE IF NOT EXISTS notification (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    title TEXT NOT NULL,
+    request_id INTEGER,
+    severity TEXT NOT NULL,
+    headline TEXT NOT NULL,
+    message TEXT NOT NULL,
+    read_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS session (
     token TEXT PRIMARY KEY,
     jellyfin_user_id TEXT NOT NULL,
@@ -150,5 +161,11 @@ class Database:
             )
             self.conn.execute(
                 f"DELETE FROM diagnosis WHERE cleared_at IS NOT NULL AND cleared_at < {cutoff_sql}"
+            )
+            # Unread notifications are kept regardless of age -- pruning something
+            # the user hasn't seen yet would be indistinguishable from it never
+            # having fired at all.
+            self.conn.execute(
+                f"DELETE FROM notification WHERE read_at IS NOT NULL AND read_at < {cutoff_sql}"
             )
             self.conn.execute(f"DELETE FROM session WHERE expires_at < datetime('now')")

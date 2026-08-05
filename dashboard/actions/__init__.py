@@ -11,7 +11,7 @@ only seeing output once the whole thing finishes.
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from . import arr_actions, prowlarr_actions, script_actions, seerr_actions
+from . import arr_actions, extract_actions, prowlarr_actions, script_actions, seerr_actions
 
 
 @dataclass
@@ -68,6 +68,12 @@ ACTIONS = {
         description="Monitors every season Sonarr actually has (ignoring Seerr's requested season numbers) and triggers a series search.",
         requires_mode=None, single_flight=True, is_subprocess=False,
         preview=arr_actions.preview_fix_season_mismatch, execute=arr_actions.execute_fix_season_mismatch,
+    ),
+    "local_extract_archive": Action(
+        id="local_extract_archive", label="Extract archive(s) and import",
+        description="Extracts unextracted multi-part RAR archives sitting in local staging with 7-Zip, then triggers a Sonarr/Radarr rescan.",
+        requires_mode="seedbox", single_flight=False, is_subprocess=False,
+        preview=extract_actions.preview_extract_archive, execute=extract_actions.execute_extract_archive,
     ),
     "run_rclone_sync": Action(
         id="run_rclone_sync", label="Run rclone sync now",

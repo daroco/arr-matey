@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Notifications{% endblock %}
+{% block content %}
+  <p><a href="/">&larr; all requests</a></p>
+  <h2>Notifications</h2>
+  {% if not rows %}
+    <p class="muted">Nothing yet -- you'll see anything the background sweep pushes to ntfy here too.</p>
+  {% endif %}
+  {% for n in rows %}
+    <div class="diagnosis {{ n.severity }}">
+      <div class="headline">
+        {% if n.request_id %}<a href="/request/{{ n.request_id }}">{{ n.title }}</a>{% else %}{{ n.title }}{% endif %}
+        &mdash; {{ n.headline }}
+      </div>
+      <div>{{ n.message }}</div>
+      <div class="since">{{ n.created_at }}</div>
+    </div>
+  {% endfor %}
+{% endblock %}

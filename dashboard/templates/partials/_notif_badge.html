@@ -1,0 +1,3 @@
+<a href="/notifications" class="bell-link" title="{{ unread }} unread notification{{ 's' if unread != 1 }}">
+  &#128276;{% if unread > 0 %}<span class="badge badge-err bell-badge">{{ unread if unread < 100 else '99+' }}</span>{% endif %}
+</a>

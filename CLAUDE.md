@@ -157,8 +157,17 @@ evaluation live across every matched request, concurrently but capped (8 at a ti
 it's genuinely slow (tens of seconds to a couple minutes), not reading a cache, since it's
 doing a real deep-trace per request. When a new stuck-request pattern shows up that isn't
 already explained by an existing rule, use the `dashboard-add-rule` skill rather than just
-fixing that one instance by hand -- three real cases (season-number mismatch, manual
-import required, never grabbed) already went through that exact loop.
+fixing that one instance by hand -- four real cases (season-number mismatch, manual
+import required, never grabbed, unextracted RAR archive) already went through that exact
+loop. `dashboard/sweep.py` runs this same rule evaluation on its own background schedule
+(`DASHBOARD_NOTIFY_POLL_SECONDS`) independent of the on-demand "stalled only" filter,
+pushes a batched-per-title ntfy notification (see `notify.py`) the first time a diagnosis
+appears, and mirrors every push in-app (bell icon + `/notifications`) — any rule added via
+the skill above is automatically covered, nothing extra to wire up. Registered as the
+`acquisitions-dashboard` Task Scheduler task; restarting after a code change needs
+`Stop-ScheduledTask`/`Start-ScheduledTask`, not `Stop-Process` (see `dashboard-restart`
+skill) — the process runs under Task Scheduler's own session context, so a plain
+`Stop-Process` from an unrelated shell can silently fail to kill it.
 
 ## Repo-specific skills
 
