@@ -1,0 +1,53 @@
+<div id="health-strip" class="health-strip">
+  {% for h in health %}
+    {% if h['source'] != '__poll__' %}
+    <span class="health-pill" style="{% if h['consecutive_failures'] > 0 %}color:var(--err);border-color:var(--err){% endif %}">
+      {{ h['source'] }}{% if h['consecutive_failures'] > 0 %} &mdash; {{ h['consecutive_failures'] }} failed{% endif %}
+    </span>
+    {% endif %}
+  {% endfor %}
+  <button class="secondary" style="margin-left:auto" hx-post="/refresh" hx-target="#health-strip-wrap" hx-swap="innerHTML">Refresh now</button>
+</div>
+{% for d in global_diags %}
+  <div class="diagnosis {{ d.severity.value }}">
+    <div class="headline">{{ d.headline }}</div>
+    <div>{{ d.detail }}</div>
+  </div>
+{% endfor %}
+
+{% set services = service_health | selectattr('category', 'equalto', 'service') | list %}
+{% set torrent_clients = service_health | selectattr('category', 'equalto', 'torrent_client') | list %}
+
+{% if services %}
+<h4 class="section-label">Services</h4>
+<div class="service-grid">
+  {% for s in services %}
+    <div class="service-card {{ 'down' if not s.reachable else '' }}">
+      <div class="service-name">
+        {{ s.name }}
+        <span class="badge {{ 'badge-ok' if s.reachable else 'badge-err' }}">{{ 'up' if s.reachable else 'down' }}</span>
+      </div>
+      {% for label, value in s.stats %}
+        <div class="service-stat"><span class="muted">{{ label }}</span> <strong>{{ value }}</strong></div>
+      {% endfor %}
+    </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if torrent_clients %}
+<h4 class="section-label">Torrent clients</h4>
+<div class="service-grid">
+  {% for s in torrent_clients %}
+    <div class="service-card {{ 'down' if not s.reachable else '' }}">
+      <div class="service-name">
+        {{ s.name }}
+        <span class="badge {{ 'badge-ok' if s.reachable else 'badge-err' }}">{{ 'up' if s.reachable else 'down' }}</span>
+      </div>
+      {% for label, value in s.stats %}
+        <div class="service-stat"><span class="muted">{{ label }}</span> <strong>{{ value }}</strong></div>
+      {% endfor %}
+    </div>
+  {% endfor %}
+</div>
+{% endif %}

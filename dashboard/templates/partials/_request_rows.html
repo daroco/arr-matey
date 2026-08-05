@@ -1,0 +1,19 @@
+<tbody id="request-rows">
+{% for r in rows %}
+  <tr onclick="window.location='/request/{{ r.id }}'" style="cursor:pointer">
+    <td>{{ r.title }}</td>
+    <td>{{ 'TV' if r.media_type == 'tv' else 'Movie' }}</td>
+    <td>{{ r.requested_by }}</td>
+    <td>{{ r.requested_at[:10] if r.requested_at else '' }}</td>
+    <td>
+      {% if not r.arr_matched %}<span class="badge badge-warn">Not sent to Sonarr/Radarr yet</span>
+      {% elif r.media_status_label == 'available' %}<span class="badge badge-ok">{{ r.media_status_display }}</span>
+      {% elif r.media_status_label == 'partially available' %}<span class="badge badge-info">{{ r.media_status_display }}</span>
+      {% elif r.media_status_label == 'processing' %}<span class="badge badge-info">{{ r.media_status_display }}</span>
+      {% else %}<span class="badge badge-muted">{{ r.media_status_display }}</span>
+      {% endif %}
+      {% if r.stalled %}<span class="badge badge-err">Has a real problem (see below)</span>{% endif %}
+    </td>
+  </tr>
+{% endfor %}
+</tbody>

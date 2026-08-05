@@ -1,0 +1,9 @@
+# Installed on top of scripts/requirements.txt (python-dotenv, requests, PyYAML) --
+# this file adds only what the dashboard itself needs beyond the automation scripts'
+# existing dependencies. Install both: pip install -r scripts/requirements.txt -r
+# dashboard/requirements.txt
+fastapi==0.115.6
+uvicorn==0.34.0
+jinja2==3.1.5
+itsdangerous==2.2.0
+python-multipart==0.0.20

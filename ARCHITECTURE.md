@@ -1,15 +1,16 @@
 # Architecture diagrams
 
-Six diagrams covering the request-to-playback path, the seedbox's two-client split, the
-Caddy auth shim, the rclone sync/import pipeline, LAN hostname routing, and one protocol
-quirk (Transmission's RPC handshake) worth having a picture of, plus a seventh for the
-alternative `local` download mode. See `README.md` for the full write-up each of these
-summarizes.
+Eight diagrams covering the request-to-playback path, the seedbox's two-client split, the
+Caddy auth shim, the rclone sync/import pipeline, LAN hostname routing, one protocol
+quirk (Transmission's RPC handshake) worth having a picture of, the alternative `local`
+download mode, and the trace dashboard's correlation engine. See `README.md` for the full
+write-up each of these summarizes.
 
 **Diagrams 1–6 are `seedbox` mode** (`DOWNLOAD_MODE=seedbox` in `.env`, the default).
 **Diagram 7 is `local` mode** (`DOWNLOAD_MODE=local`) — a simpler, seedbox-free
 alternative; see README's Local mode section. Only one mode is active in a given
-deployment.
+deployment. **Diagram 8** (the dashboard) is mode-aware and shown for `seedbox` mode,
+noting where `local` mode collapses two stages into one.
 
 **Color key, used consistently below:** 🟧 private tracker path (qBittorrent, Hit & Run
 compliance) · 🟦 public tracker path (Transmission, peer discovery on).
@@ -146,7 +147,7 @@ flowchart LR
 
 ---
 
-## 5. LAN hostnames, and the one public route
+## 5. LAN hostnames, and the public routes
 
 ```mermaid
 flowchart TD
@@ -164,9 +165,11 @@ flowchart TD
     CD --> JS2["jellyseerr:5055"]
     CD --> JF2["host.docker.internal:8096"]
 
-    CF["Cloudflare: public A record"] -.->|"resolves watch.correll.tv to the WAN IP"| PHONE["Any device off-LAN"]
-    PHONE -->|"https://watch.correll.tv (router forwards :443 only)"| CD2["Caddy :443<br/>real Let's Encrypt cert, DNS-01"]
+    CF["Cloudflare: public A records"] -.->|"resolves watch/jellyseerr/apex.correll.tv to the WAN IP"| PHONE["Any device off-LAN"]
+    PHONE -->|"https://watch.correll.tv (router forwards :443 only)"| CD2["Caddy :443<br/>real Let's Encrypt certs, DNS-01"]
+    PHONE -->|"https://jellyseerr.correll.tv, https://correll.tv"| CD2
     CD2 --> JF2
+    CD2 --> JS2
 
     class CF,PHONE,CD2 public
     classDef public fill:#e4e8fb,stroke:#4b5fbd,color:#26305c,stroke-width:2px;
@@ -175,14 +178,19 @@ flowchart TD
 > A real registered TLD (`.tv`) is used instead of a made-up one so browsers actually
 > navigate to it instead of treating it as a search query — the Public Suffix List check
 > made-up TLDs tend to fail. This same real-registration property is also what makes the
-> public route possible at all: Let's Encrypt can't issue a certificate for a name that
+> public routes possible at all: Let's Encrypt can't issue a certificate for a name that
 > doesn't resolve publicly, which a made-up TLD or a Pi-hole-only record never would.
 >
-> `watch.correll.tv` is deliberately the only hostname with a public DNS record. Every
-> other `*.correll.tv` name only exists in Pi-hole's local records — there's no public A
-> or CNAME for `sonarr.correll.tv` etc. to even attempt to resolve, and only port 443 is
-> forwarded at the router (never 80), so those apps stay unreachable from outside the LAN
-> by construction rather than by the Caddyfile's `lanonly` guard alone.
+> `watch.correll.tv`, `jellyseerr.correll.tv`, and bare `correll.tv` are deliberately the
+> only hostnames with public DNS records — the same three the Caddyfile's `rate_limit`
+> blocks apply to. Every other `*.correll.tv` name only exists in Pi-hole's local records
+> — there's no public A or CNAME for `sonarr.correll.tv` etc. to even attempt to resolve,
+> and only port 443 is forwarded at the router (never 80), so those apps stay unreachable
+> from outside the LAN by construction rather than by the Caddyfile's `lanonly` guard
+> alone. Jellyseerr and Jellyfin both gate every request behind their own login (no
+> anonymous access) and Jellyseerr can authenticate against Jellyfin's own accounts
+> (`mediaServerLogin`), so the same household credentials work for both — see README
+> section 6.
 
 ---
 
@@ -230,3 +238,39 @@ flowchart LR
 > your home IP — optionally fixable by layering `compose.vpn.yml` on top, which routes
 > this same qBittorrent through Gluetun instead) and no ratio/seed-time management (not
 > suitable for most private trackers) — see README's Local mode section.
+
+---
+
+## 8. Tracing a request (the dashboard)
+
+```mermaid
+flowchart TD
+    SR["Seerr request"] -->|"media.externalServiceId<br/>(NOT tmdbId -- confirmed live,<br/>they're different id spaces)"| ARR["Sonarr series /<br/>Radarr movie"]
+    ARR -->|"history/series or<br/>history/movie"| HIST["grabbed +<br/>downloadFolderImported events"]
+    HIST -->|"downloadId, lowercased<br/>(the join key)"| TOR{"torrent hash"}
+    TOR -->|qBittorrent| QB["qBittorrent<br/>(seedbox or local)"]
+    TOR -->|Transmission| TR["Transmission<br/>(seedbox only)"]
+    QB -->|"complete + seeding"| SYNC["local staging check<br/>(seedbox mode only --<br/>collapses away in local mode)"]
+    TR -->|"complete + seeding"| SYNC
+    SYNC -->|"downloadFolderImported"| LIB["Sonarr/Radarr<br/>hasFile"]
+
+    class QB private
+    class TR public
+    classDef private fill:#f6e4cf,stroke:#ad6b28,color:#4a3216,stroke-width:2px;
+    classDef public fill:#e4e8fb,stroke:#4b5fbd,color:#26305c,stroke-width:2px;
+```
+
+> Six read-only sources (Seerr, Sonarr, Radarr, Prowlarr, and both torrent clients)
+> converge on one join key: `downloadId`, the grab's torrent infohash, lowercased on both
+> sides since history reports it uppercase and the clients report it lowercase. One grab
+> can cover many episodes (a season pack) — confirmed live against a real 17-season
+> request, where a single `downloadId` correctly fanned out to cover ten episodes in one
+> card rather than being duplicated ten times.
+>
+> The trickiest rule isn't detecting a stall — it's *not* flagging the normal healthy end
+> state as one. A torrent paused at its seed target with its downloadId already in the
+> imported set is exactly what `scripts/seedbox-cleanup.py` is waiting to clean up next,
+> not a problem; qBittorrent's `pausedUP` state has to be told apart from `stalledUP`
+> (idle but still seeding, not done) for this to work, confirmed against live seedbox data
+> during development where most "complete" torrents were actually `stalledUP`, not
+> `pausedUP`.

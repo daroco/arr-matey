@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Requests{% endblock %}
+{% block content %}
+  <div id="health-strip-wrap" hx-get="/partials/health" hx-trigger="load, every 30s" hx-swap="innerHTML">
+    {% include "partials/_health.html" %}
+  </div>
+
+  <form class="filter-bar" hx-get="/partials/requests" hx-target="#request-rows" hx-swap="outerHTML"
+        hx-trigger="input changed delay:300ms from:input[name=q], change from:select, change from:input[type=checkbox], every 30s">
+    <input type="text" name="q" placeholder="Search title..." value="{{ params.get('q', '') }}">
+    <select name="type">
+      <option value="all" {{ 'selected' if params.get('type', 'all') == 'all' }}>All types</option>
+      <option value="tv" {{ 'selected' if params.get('type') == 'tv' }}>TV</option>
+      <option value="movie" {{ 'selected' if params.get('type') == 'movie' }}>Movie</option>
+    </select>
+    <select name="status">
+      <option value="all" {{ 'selected' if params.get('status', 'all') == 'all' }}>All statuses</option>
+      <option value="available" {{ 'selected' if params.get('status') == 'available' }}>Available</option>
+      <option value="partially available" {{ 'selected' if params.get('status') == 'partially available' }}>Partially available</option>
+      <option value="processing" {{ 'selected' if params.get('status') == 'processing' }}>Processing</option>
+      <option value="pending" {{ 'selected' if params.get('status') == 'pending' }}>Pending</option>
+      <option value="unmatched" {{ 'selected' if params.get('status') == 'unmatched' }}>Not matched</option>
+    </select>
+    <select name="sort">
+      <option value="newest" {{ 'selected' if params.get('sort', 'newest') == 'newest' }}>Newest first</option>
+      <option value="oldest" {{ 'selected' if params.get('sort') == 'oldest' }}>Oldest first</option>
+      <option value="title" {{ 'selected' if params.get('sort') == 'title' }}>Title A-Z</option>
+      <option value="status" {{ 'selected' if params.get('sort') == 'status' }}>Status</option>
+    </select>
+    <label class="checkbox">
+      <input type="checkbox" name="stalled" value="1" {{ 'checked' if params.get('stalled') == '1' }}>
+      Stalled only (slower -- runs full diagnosis)
+    </label>
+  </form>
+
+  <div class="card" style="padding:0">
+    <table>
+      <thead><tr><th>Title</th><th>Type</th><th>Requested by</th><th>Date</th><th>Status</th></tr></thead>
+      {% include "partials/_request_rows.html" %}
+    </table>
+  </div>
+{% endblock %}

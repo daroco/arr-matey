@@ -54,6 +54,38 @@ http://jellyseerr.{$DOMAIN}, http://{$DOMAIN} {
 	reverse_proxy jellyseerr:5055
 }
 
+# Public route: same posture as https://watch.{$DOMAIN} below -- real cert via
+# the DNS-01 challenge above, reachable once the router forwards 443 (already
+# true for watch.{$DOMAIN}; Caddy SNI-routes both hostnames off the same
+# listener, so no additional port-forward is needed here). Jellyseerr's own
+# login (Jellyfin-backed or local, see README section 4) gates access.
+https://jellyseerr.{$DOMAIN}, https://{$DOMAIN} {
+	rate_limit {
+		# Scoped to public (non-LAN) traffic only -- see the comment on the
+		# watch.{$DOMAIN} block below for why.
+		zone jellyseerr_general {
+			match {
+				not remote_ip private_ranges
+			}
+			key {client_ip}
+			events 300
+			window 1m
+		}
+		zone jellyseerr_login {
+			match {
+				path /api/v1/auth/*
+				not remote_ip private_ranges
+			}
+			key {client_ip}
+			events 10
+			window 1m
+		}
+	}
+	reverse_proxy jellyseerr:5055 {
+		header_up X-Real-IP {client_ip}
+	}
+}
+
 # LAN-only route -- kept exactly as-is so every existing TV/device pointed at
 # this hostname over plain HTTP keeps working unchanged.
 http://watch.{$DOMAIN} {
@@ -69,8 +101,25 @@ https://watch.{$DOMAIN} {
 	# still blunts scripted scanning against the one route on the internet.
 	# The login zone is tighter and specifically targets the auth endpoint,
 	# since that's what credential-stuffing tools actually hammer.
+	#
+	# Both zones are scoped to `not remote_ip private_ranges` -- LAN clients
+	# hitting this same public hostname (via Pi-hole's local resolution, no
+	# Cloudflare involved) never carry a CF-Connecting-IP header, and Docker
+	# Desktop's own networking makes every such connection appear to Caddy as
+	# the docker bridge gateway (a private-range address, e.g. 172.18.0.1) --
+	# not the real LAN device. Rate-limiting that address would lump every
+	# local device and browser tab into one shared budget, tripping 429s from
+	# nothing more than normal local use (a single SPA page load fires plenty
+	# of parallel requests on its own). Since trusted_proxies above only ever
+	# resolves {client_ip}/remote_ip to a real *public* IP for genuine
+	# Cloudflare-proxied traffic, `not remote_ip private_ranges` reliably
+	# means "only rate-limit real internet traffic" -- same trust boundary as
+	# the `lanonly` guard used elsewhere in this file.
 	rate_limit {
 		zone watch_general {
+			match {
+				not remote_ip private_ranges
+			}
 			key {client_ip}
 			events 300
 			window 1m
@@ -78,6 +127,7 @@ https://watch.{$DOMAIN} {
 		zone watch_login {
 			match {
 				path /Users/AuthenticateByName
+				not remote_ip private_ranges
 			}
 			key {client_ip}
 			events 10
@@ -85,6 +135,48 @@ https://watch.{$DOMAIN} {
 		}
 	}
 	reverse_proxy host.docker.internal:8096 {
+		header_up X-Real-IP {client_ip}
+	}
+}
+
+# LAN-only route for the trace dashboard -- same shape as watch.{$DOMAIN} below,
+# reverse-proxying to the host since dashboard/ runs as a plain Windows process (via
+# Task Scheduler, not a container) so it can subprocess scripts/rclone-sync.py and
+# scripts/seedbox-cleanup.py directly. See README's dashboard section for why.
+http://stats.{$DOMAIN} {
+	reverse_proxy host.docker.internal:8099
+}
+
+# Public route: real Let's Encrypt cert via the DNS-01 challenge above. Gated by
+# Jellyfin-credential login (dashboard/auth.py) -- any Jellyfin account can view
+# traces, only Jellyfin admins can run fix actions -- so exposing it publicly hands
+# out no more access than Jellyfin/Seerr already do.
+https://stats.{$DOMAIN} {
+	# Same rate-limit shape as watch.{$DOMAIN}/jellyseerr.{$DOMAIN} below, including
+	# the `not remote_ip private_ranges` guard -- without it, every LAN device
+	# sharing Docker Desktop's collapsed 172.18.0.1 identity would share one rate
+	# budget (see the Caddyfile history around watch_general for the full story of
+	# why that caused real false-lockouts here before).
+	rate_limit {
+		zone stats_general {
+			match {
+				not remote_ip private_ranges
+			}
+			key {client_ip}
+			events 300
+			window 1m
+		}
+		zone stats_login {
+			match {
+				path /login
+				not remote_ip private_ranges
+			}
+			key {client_ip}
+			events 10
+			window 1m
+		}
+	}
+	reverse_proxy host.docker.internal:8099 {
 		header_up X-Real-IP {client_ip}
 	}
 }

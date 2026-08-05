@@ -1,0 +1,21 @@
+<div class="card" style="margin-top:0.5rem">
+  {% if blocked %}
+    <div class="diagnosis error"><div class="headline">Can't run this</div><div>{{ blocked }}</div></div>
+  {% elif preview.blocked_reason %}
+    <div class="diagnosis warning"><div class="headline">{{ preview.summary }}</div><div>{{ preview.blocked_reason }}</div></div>
+  {% else %}
+    <div><strong>{{ action.label }}</strong></div>
+    <p>{{ preview.summary }}</p>
+    {% if preview.before or preview.after %}
+      <div class="evidence">
+        {% if preview.before %}before: {{ preview.before }}{% endif %}
+        {% if preview.after %}&rarr; after: {{ preview.after }}{% endif %}
+      </div>
+    {% endif %}
+    {% for w in preview.warnings %}<div class="diagnosis warning">{{ w }}</div>{% endfor %}
+    <form hx-post="/actions/{{ action.id }}/run" hx-target="this" hx-swap="outerHTML" style="margin-top:0.75rem">
+      {% for k, v in params.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+      <button type="submit">Confirm: {{ action.label }}</button>
+    </form>
+  {% endif %}
+</div>

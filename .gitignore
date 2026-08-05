@@ -1,3 +1,8 @@
 .env
 scripts/cross-seed.log
-scripts/__pycache__
+__pycache__/
+
+# Claude Code project state -- local/session-scoped, not meant to be shared.
+# Skills are the one thing here that's actually a repo deliverable.
+.claude/*
+!.claude/skills/

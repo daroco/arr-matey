@@ -306,21 +306,22 @@ your LAN — Let's Encrypt can't issue a normal certificate for a name it can't 
 a self-signed cert would just bring back the "not secure" warning until every device
 trusted a custom root CA. Since the whole point here was zero extra setup per device,
 the `Caddyfile`'s global `auto_https disable_redirects` option keeps Caddy from ever
-synthesizing an HTTP→HTTPS redirect on port 80 — every `*.{$DOMAIN}` route except
-`watch.{$DOMAIN}` stays plain HTTP with no certificate involved. If a browser's
-"HTTPS-first" mode tries `https://` before `http://` for one of these, it gets
-connection-refused (nothing is listening on 443 for them) rather than a certificate
-warning, and falls back to plain HTTP automatically.
+synthesizing an HTTP→HTTPS redirect on port 80 — every LAN-only `*.{$DOMAIN}` route
+(Sonarr, Radarr, Prowlarr, Bazarr, qBittorrent) stays plain HTTP with no certificate
+involved. If a browser's "HTTPS-first" mode tries `https://` before `http://` for one of
+these, it gets connection-refused (nothing is listening on 443 for them) rather than a
+certificate warning, and falls back to plain HTTP automatically.
 
-`watch.{$DOMAIN}` is the one exception, covered next — it has both an `http://` block
-(LAN, unchanged) and a real `https://` block with a genuine Let's Encrypt cert (public).
+`watch.{$DOMAIN}`, `{$DOMAIN}` (apex), and `jellyseerr.{$DOMAIN}` are the exceptions,
+covered next — each has both an `http://` block (LAN, unchanged) and a real `https://`
+block with a genuine Let's Encrypt cert (public).
 
 ---
 
 ## 6. Access outside your home network
 
 Two options, different risk profiles. This stack uses the second one for Jellyfin
-specifically; the *arr apps stay LAN-only either way.
+and Seerr specifically; the *arr apps stay LAN-only either way.
 
 **Tailscale.** Private mesh VPN between your devices — nothing exposed to the public
 internet. Install on your PC and phone, same account on both, and your phone reaches the
@@ -330,12 +331,15 @@ real CVEs over the years — so keeping them reachable only via a private mesh i
 an open port is the safer default. Downside: every device that wants access needs the
 Tailscale client installed, which rules out most TVs.
 
-**Port forward + real domain + Caddy TLS (what `watch.{$DOMAIN}` uses).** Only Jellyfin
-is exposed this way — the *arr apps are never forwarded, and the `lanonly` snippet in the
-`Caddyfile` blocks them at the app layer too as defense in depth (see below). The seedbox's
-own torrent clients are already reached over the internet directly (that's the nature of
-a seedbox) and have their own auth in front — not something this stack's network exposure
-affects either way.
+**Port forward + real domain + Caddy TLS (what `watch.{$DOMAIN}` and `{$DOMAIN}` /
+`jellyseerr.{$DOMAIN}` use).** Only Jellyfin and Seerr are exposed this way — the *arr apps
+are never forwarded, and the `lanonly` snippet in the `Caddyfile` blocks them at the app
+layer too as defense in depth (see below). Both public apps sit behind their own login
+(Jellyfin's own auth; Seerr's Jellyfin-backed or local login, see section 4's Seerr step),
+so exposing Seerr's request UI doesn't hand out any access Jellyfin itself wouldn't already
+gate. The seedbox's own torrent clients are already reached over the internet directly
+(that's the nature of a seedbox) and have their own auth in front — not something this
+stack's network exposure affects either way.
 
 **Why DNS-01, not the more common HTTP-01 challenge:** HTTP-01 needs port 80 reachable
 from the internet for Let's Encrypt to hit `/.well-known/acme-challenge/...`. Forwarding
@@ -350,28 +354,37 @@ Setup:
 
 1. **Register a real domain** if you don't already own one — this stack's own reference
    deployment uses `correll.tv`. A domain you already use for the LAN-only hostnames
-   (section 5) works fine; the public route is one additional hostname on it
-   (`watch.{$DOMAIN}`), not a second domain.
+   (section 5) works fine; the public routes are additional hostnames on it
+   (`watch.{$DOMAIN}`, and optionally `{$DOMAIN}` / `jellyseerr.{$DOMAIN}` for Seerr),
+   not a second domain.
 2. **Add the domain to Cloudflare** (free plan) and point the registrar's nameservers at
    Cloudflare's. This is what makes DNS-01 possible — Caddy's `acme_dns cloudflare`
    directive needs the zone to actually live there.
-3. **Create one DNS record**, `watch` → `A` → your current WAN IP (find it at
-   `https://api.ipify.org`). Either DNS-only (grey cloud) or **Proxied** (orange cloud,
-   what this stack's reference deployment uses) works — DNS-01 only ever touches the
-   separate `_acme-challenge` TXT record, so the A record's proxy status has no effect on
-   cert issuance or renewal either way. Proxied does mean routing your video through
-   Cloudflare's CDN, which is against their free/Pro tier's terms for sustained streaming
-   use; low-risk for a single person's personal remote access, but worth knowing going in.
-   In exchange you get: your real origin IP hidden from internet-wide scanning, plus free
+3. **Create one `A` record per public hostname** you want (`watch`, and optionally
+   `{$DOMAIN}`/apex plus `jellyseerr` for Seerr) → your current WAN IP (find it at
+   `https://api.ipify.org`). Each can be either DNS-only (grey cloud) or **Proxied**
+   (orange cloud, what this stack's reference deployment uses for all three) — DNS-01
+   only ever touches the separate `_acme-challenge` TXT record per hostname, so a
+   record's proxy status has no effect on cert issuance or renewal either way. Proxied
+   does mean routing traffic through Cloudflare's CDN, which is against their free/Pro
+   tier's terms for sustained video-streaming use specifically; low-risk for a single
+   person's personal remote access, but worth knowing going in (Seerr's own traffic —
+   metadata/API calls, no video — isn't affected by that particular ToS concern). In
+   exchange you get: your real origin IP hidden from internet-wide scanning, plus free
    WAF/bot-fight-mode. If proxied, Caddy needs to trust Cloudflare's IP ranges to recover
    the real visitor IP from the `CF-Connecting-IP` header — see the `trusted_proxies`
    block in the Caddyfile's global options (ranges from
    `https://www.cloudflare.com/ips/`, ***not*** something `caddy fmt` or Cloudflare keeps
-   in sync automatically — re-check that page occasionally).
+   in sync automatically — re-check that page occasionally). Optional but recommended if
+   proxied: Cloudflare dashboard → SSL/TLS → Edge Certificates → **Always Use HTTPS**, so
+   a client that tries plain `http://` first gets redirected to `https://` at Cloudflare's
+   edge instead of timing out against the router's unforwarded port 80.
 4. **Create a scoped API token**: Cloudflare dashboard → My Profile → API Tokens →
    Create Token → permissions `Zone:DNS:Edit`, resource restricted to this one zone. Put
    it in `.env` as `CF_API_TOKEN`, along with `ACME_EMAIL`, `CF_ZONE`, and
-   `DDNS_RECORD=watch.{$DOMAIN}` (see `.env.example` for the full description of each).
+   `DDNS_RECORDS=watch.{$DOMAIN},{$DOMAIN},jellyseerr.{$DOMAIN}` (comma-separated list —
+   include only the hostnames you actually created records for; see `.env.example` for
+   the full description of each var).
 5. **Free port 443 on the host for Caddy** if something else already owns it — this
    stack's Pi-hole did (its HTTPS block-page listener), remapped to `8443:443` in its own
    `docker-compose.yml`. Check `docker ps` for anything else publishing `443`.
@@ -397,22 +410,36 @@ Setup:
    the real client's. **Published Server URLs** can stay per-subnet
    (`192.168.x.0/24=http://192.168.x.x:8096`, `all=https://watch.{$DOMAIN}`) so LAN clients
    keep using the LAN URL unchanged. Leave `EnableHttps`/`RequireHttps` off — TLS
-   terminates at Caddy, Jellyfin stays plain HTTP behind it.
+   terminates at Caddy, Jellyfin stays plain HTTP behind it. Seerr needs no equivalent
+   step — it calls `server.enable('trust proxy')` unconditionally in its own code, so it
+   already sees the real client IP via the `X-Forwarded-*`/`X-Real-IP` headers Caddy sets.
 
 **Rate limiting.** `Dockerfile.caddy` also builds in `mholt/caddy-ratelimit`, and the
-`https://watch.{$DOMAIN}` block in the Caddyfile applies it per-visitor: a generous
-general ceiling (300 req/min) that shouldn't affect real browsing/streaming, plus a
-tighter zone (10 req/min) scoped to Jellyfin's `/Users/AuthenticateByName` login endpoint
-specifically, to blunt credential-stuffing. Both are keyed on `{client_ip}`, not
+`https://watch.{$DOMAIN}` and `https://{$DOMAIN}, https://jellyseerr.{$DOMAIN}` blocks in
+the Caddyfile each apply it per-visitor: a generous general ceiling (300 req/min) that
+shouldn't affect real browsing/streaming, plus a tighter zone (10 req/min) scoped to each
+app's own login endpoint specifically (Jellyfin's `/Users/AuthenticateByName`; Seerr's
+`/api/v1/auth/*`, covering its Jellyfin-backed, local, and Plex login routes), to blunt
+credential-stuffing. Both zones on both blocks are keyed on `{client_ip}`, not
 `{remote_host}` — with Cloudflare proxying in front, every request's TCP peer is a
 Cloudflare edge IP, so keying on the raw peer would rate-limit everyone as if they were
 one visitor.
 
-No IP allowlist is applied yet — Jellyfin's own login plus the TLS connection and the
+Neither Jellyfin nor Seerr allows anonymous access — every request that isn't already
+authenticated gets redirected to that app's own login page (verified with `curl`: an
+unauthenticated request to `{$DOMAIN}` gets a `307` to `/login`). Seerr's login itself
+accepts either an existing Jellyfin account (`mediaServerLogin`, validated live against
+Jellyfin's own auth API — Seerr never creates Jellyfin accounts, so a user has to already
+exist in Jellyfin's Dashboard → Users first) or a pre-existing local Seerr account
+(`localLogin`); a Jellyfin login auto-provisions a matching Seerr account on first
+success, with basic request-only permissions unless that Jellyfin account is an admin
+and it's the very first Seerr user. There's no separate self-serve Seerr signup.
+
+No IP allowlist is applied yet — each app's own login plus the TLS connection and the
 rate limiter above are the whole access-control story for now. Worth doing before going
-live: update Jellyfin, confirm the admin password is strong and not reused, turn off
-Quick Connect if unused, and confirm Jellyfin's own login-attempt lockout is on. An
-IP-based allowlist (Caddy `remote_ip` matcher, or a Windows Firewall rule if Docker
+live: update Jellyfin and Seerr, confirm admin passwords are strong and not reused, turn
+off Jellyfin Quick Connect if unused, and confirm Jellyfin's own login-attempt lockout is
+on. An IP-based allowlist (Caddy `remote_ip` matcher, or a Windows Firewall rule if Docker
 Desktop's networking turns out to mangle source IPs — check `docker logs caddy` for the
 real client IP on an external request before relying on either) is a planned fast-follow,
 not yet implemented.
@@ -740,6 +767,160 @@ returns the expected `409` + session-id handshake. This is why Sonarr/Radarr's
 Transmission client needs `UrlBase=""` here rather than its documented default — worth
 re-checking with a live request rather than trusting the field's own help text if a
 different seedbox provider mounts things differently.
+
+---
+
+## 10. The trace dashboard
+
+Seerr's own Requests tab tells you *what* you requested and its top-level status, but
+when something's actually stuck it just links out to whichever Sonarr/Radarr page owns
+it — no explanation of *why*, and nothing that ties together Seerr's request, the grab,
+which of the two seedbox clients it landed on, whether it's synced down locally yet, and
+whether it actually imported. `dashboard/` is a small FastAPI app that traces one request
+across that whole pipeline and gives plain-language diagnoses for the stall patterns this
+stack has actually hit in practice, with buttons to run the already-documented manual
+fixes above instead of hunting down the right curl command again.
+
+**The join key**: every grab has a `downloadId` in Sonarr/Radarr's history — the torrent's
+own infohash, lowercased. That's what ties one Seerr request's grab to a specific torrent
+on a specific client (`scripts/seedbox-cleanup.py`'s `fetch_imported_hashes()` already
+relies on the exact same join). One TV request can fan out into many grabs (a season pack
+covers many episodes in one grab) — the dashboard shows one card per grab, not one per
+episode.
+
+**What it diagnoses** (each maps to a fix button where one exists):
+- No seeders on a still-downloading torrent, past a configurable stall threshold.
+- *(seedbox mode)* Finished on the seedbox but hasn't synced down to local staging yet —
+  escalates to an error if a successful rclone run has completed *since* the torrent
+  finished and the file is still missing, since that's a broken sync, not a slow one.
+- Import failed or blocked, showing Sonarr/Radarr's own message verbatim rather than a
+  generic "something went wrong."
+- **Manual import required** — the file is fully downloaded but Sonarr/Radarr won't
+  auto-import because the match came from grab history (by internal ID) rather than
+  parsing the filename itself. A real safety check, not a real problem — confirmed live
+  against a genuinely correct match (*The Departed*) that just needed a human to confirm
+  it. The fix button re-fetches Sonarr/Radarr's own best-guess match and only proceeds if
+  it's a single, unambiguous, rejection-free candidate; otherwise it tells you to use the
+  arr's own Manual Import screen instead of guessing.
+- **Never grabbed** — matched fine, but nothing's ever searched or grabbed. This one isn't
+  a fix button so much as an *answer*: it runs a live interactive search
+  (`GET /api/v3/release`) and reports exactly what it finds — zero releases anywhere (not
+  a quality-profile problem, the release likely doesn't exist on any configured indexer),
+  releases that exist but were all rejected (with each one's actual rejection reason), or
+  releases that exist and *weren't* rejected (should be gettable via a manual/automatic
+  search). Confirmed live: a "never grabbed" kids' movie special turned out to have zero
+  releases on any indexer at all, definitively ruling out a quality-profile cause.
+- **Season-number mismatch** (TV only) — the series matched fine in Sonarr, but zero
+  episodes ever resolved from Seerr's requested season numbers. Confirmed live against
+  MythBusters' original run: Sonarr groups its seasons by year (2003–2018, matching
+  TheTVDB), while Seerr's request used ordinal season numbers (1–16, from TMDB) — neither
+  app has a season-remapping feature, so the fix bypasses Seerr's season numbers entirely,
+  monitors every season Sonarr itself actually has, and triggers a full series search.
+- Seerr's cached root folder path going stale (the exact bug in this README's own
+  Troubleshooting section) — checked globally, independent of any one request, so it
+  warns before the *next* request fails rather than after.
+- The normal healthy end state — paused at its seed target *and* already confirmed
+  imported, awaiting `scripts/seedbox-cleanup.py`'s next pass — is explicitly rendered as
+  "done," not a stall. Getting this backwards would make the dashboard cry wolf on every
+  successful download, since that's the expected terminal state for anything with
+  `max_ratio_act=0` (Pause, see section 9's warnings).
+
+**Fix buttons** (each is preview-then-confirm — nothing mutates until you click confirm a
+second time): push Seerr's corrected root folder, retry a failed request, force a Prowlarr
+indexer resync, raise an indexer's Minimum Seeders, confirm a Manual Import, search live
+and show why nothing's grabbed, monitor a series' real seasons and search, or run
+`rclone-sync.py`/`seedbox-cleanup.py` immediately instead of waiting for their schedule.
+The cleanup button's preview is literally that script's own `--dry-run` output — nothing
+to reimplement, it already makes the exact judgment call the preview needs.
+
+### The request list: filters, sorting, and service health
+
+The list page has a search box, type/status filters, and a sort order — all cheap and
+instant, computed from whatever the background poller already fetched, no extra API
+calls. There's also a **"Stalled only"** checkbox that's a different animal: it runs the
+*real* diagnosis engine (a full trace + rule evaluation, same as opening a single
+request) concurrently across every matched request, capped at 8 at a time so it doesn't
+hammer Sonarr/Radarr/Prowlarr with 100+ simultaneous calls. That's genuinely slow (tens of
+seconds to a couple of minutes depending on how busy the *arr apps already are) — it's
+doing real work, not reading a cache, and one slow/unreachable source just gets skipped
+rather than failing the whole filter.
+
+Above the list, a **service health** section shows at-a-glance stats per app (series
+count, missing episodes, queue size, indexer count, pending requests, active torrents,
+etc.), split into **Services** (Sonarr/Radarr/Prowlarr/Seerr) and **Torrent clients**
+(qBittorrent, and Transmission in seedbox mode) — all from the same already-fetched
+snapshot data, no extra cost. Distinct from the smaller health-pill strip next to it,
+which is about *poll connectivity* (is the background poller currently able to reach each
+source), not service-level stats.
+
+### Access and auth
+
+Runs as a plain host process, not a container — the two script-triggering fix buttons
+need real `subprocess` access to Windows-only scripts (`rclone-sync.py` hardcodes an
+`rclone.exe` path and `CREATE_NO_WINDOW`), the same reason every other scheduled script in
+this repo runs on the host. Caddy fronts it exactly the way it already fronts
+host-installed Jellyfin: `reverse_proxy host.docker.internal:8099`.
+
+Reachable two ways, same as Jellyfin/Seerr:
+- **LAN**: `http://stats.{$DOMAIN}`, plain HTTP, no TLS involved (same reasoning as every
+  other LAN-only route in section 5) — still requires signing in once the page loads.
+- **Public**: `https://stats.{$DOMAIN}`, real Let's Encrypt cert via the same DNS-01 setup
+  as section 6, Cloudflare-proxied, rate-limited the same way (300 req/min general, 10
+  req/min on `/login` specifically) — **including the `not remote_ip private_ranges`
+  guard** on both zones. Without it, every LAN device sharing Docker Desktop's collapsed
+  `172.18.0.1` identity (see the Troubleshooting entry on this) would share one rate
+  budget and trip false 429s from nothing more than normal local use.
+
+**Login is Jellyfin-credential delegation, the same mechanism Seerr itself uses**: the
+dashboard's own login form forwards the submitted username/password straight to
+Jellyfin's `POST /Users/AuthenticateByName` and trusts Jellyfin's answer — not real SSO,
+no shared token, just the same household credentials working for both apps with nothing
+extra to manage. Any Jellyfin account can sign in and view traces; only accounts where
+Jellyfin reports `Policy.IsAdministrator: true` can see or run fix-action buttons, since
+those mutate real Sonarr/Radarr/Seerr config and this is now reachable from the internet.
+
+### Setup
+
+1. `pip install -r scripts/requirements.txt -r dashboard/requirements.txt`
+2. Create the DNS record and add it to `DDNS_RECORDS` the same way as section 6's other
+   public hostnames — `stats.{$DOMAIN}` needs its own Cloudflare `A` record (proxied) and
+   a slot in `.env`'s `DDNS_RECORDS` list.
+3. Add a Pi-hole Local DNS record for `stats.{$DOMAIN}` → this machine's LAN IP (section
+   5) if you want it reachable by name from inside the house too, not just publicly.
+4. `.env`: `DASHBOARD_PORT` (default `8099`), `DASHBOARD_POLL_SECONDS` (default `30`),
+   `DASHBOARD_HISTORY_POLL_SECONDS` (default `180`), `DASHBOARD_STALL_MINUTES` (default
+   `60`), `DASHBOARD_RETENTION_DAYS` (default `90`) — see `.env.example`. No Jellyfin
+   connection vars needed; it reads them from Seerr's own `settings.json`.
+5. **Run it**: `python -m dashboard.run` (needs `-m`, not a bare file path — it's a
+   package, unlike the standalone `scripts/*.py` files). For it to survive logoff/reboot,
+   register it as a Task Scheduler task the same way as the other scheduled scripts, but
+   with an **At log on** trigger (not a repeating interval — this is a long-running
+   server, not a periodic job) and **no execution time limit** (the default kills anything
+   still running after 72 hours, which for a server means "kills it after 3 days"):
+   ```powershell
+   $action = New-ScheduledTaskAction -Execute "C:\Users\drcor\AppData\Local\Programs\Python\Python39\pythonw.exe" `
+     -Argument "-m dashboard.run" -WorkingDirectory "C:\Users\drcor\acquisitions"
+   $trigger = New-ScheduledTaskTrigger -AtLogOn
+   $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1)
+   Register-ScheduledTask -TaskName "acquisitions-dashboard" -Action $action -Trigger $trigger -Settings $settings
+   ```
+   (This needs to be run from an elevated/admin PowerShell on this machine — registering
+   an At-log-on task isn't always permitted from a standard session.)
+6. Check `<CONFIG_ROOT>\dashboard\dashboard.log` if it doesn't come up — same
+   `RotatingFileHandler` + startup-exception pattern as every other scheduled script here.
+
+### Known limits
+
+History lookups for the request list are capped at one page (250 records) per app, same
+horizon `scripts/seedbox-cleanup.py` already accepts — anything that scrolled off before
+the dashboard's first run won't show on a request whose grab predates that. Opening a
+single request's full trace bypasses this (it queries that item's history directly), so
+this only affects the list view's freshness for very old requests. There's no test suite
+in this repo (see CLAUDE.md) — this was verified by hand against the live stack during
+development, including two real bugs it caught and fixed: a fully-imported movie briefly
+showing a false "import blocked" (Sonarr's queue can keep a stale entry for a downloadId
+that already completed) and a stage-track showing "unknown" instead of "done" for
+completed grabs whose torrent had already been cleaned up from the client.
 
 ---
 

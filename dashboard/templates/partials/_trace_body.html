@@ -1,0 +1,53 @@
+<div class="card">
+  <h2 style="margin-top:0">{{ trace.title }} <span class="muted">({{ 'TV' if trace.media_type == 'tv' else 'Movie' }})</span></h2>
+  <div class="muted">Requested by {{ trace.requested_by }} on {{ trace.requested_at[:16] if trace.requested_at else '?' }}</div>
+  <div style="margin-top:0.5rem"><span class="badge badge-info">{{ trace.rollup_status }}</span></div>
+
+  {% if trace.match_confidence == 'unmatched' %}
+    <div class="diagnosis error" style="margin-top:1rem">
+      <div class="headline">Never reached Sonarr/Radarr</div>
+      <div>This request has no matching Sonarr/Radarr item -- it may still be pending approval, or Seerr never successfully created it there.</div>
+    </div>
+  {% endif %}
+
+  {% set diagnoses = trace.diagnoses %}
+  {% include "partials/_diagnosis.html" with context %}
+</div>
+
+{% if trace.attempts %}
+  <h3>Grabs ({{ trace.attempts|length }})</h3>
+  {% for download_id, att in trace.attempts.items() %}
+    <div class="attempt-card">
+      <div class="name">{{ att.torrent_name }}</div>
+      <div class="covers">
+        {{ att.client or '?' }} &middot; {{ att.indexer or '?' }}
+        {% if att.covers %} &middot; covers {{ att.covers|length }} target(s){% endif %}
+      </div>
+      <div class="stage-track">
+        {% for s in att.stages %}
+          <span class="stage stage-{{ s.status }}" title="{% for e in s.evidence %}{{ e.label }}: {{ e.detail }}&#10;{% endfor %}">
+            {{ s.stage.value.replace('_', ' ') }}
+          </span>
+        {% endfor %}
+      </div>
+      {% set diagnoses = att.diagnoses %}
+      {% include "partials/_diagnosis.html" with context %}
+    </div>
+  {% endfor %}
+{% endif %}
+
+{% if trace.targets and trace.media_type == 'tv' %}
+  <h3>Episodes ({{ trace.targets|length }})</h3>
+  <table>
+    <thead><tr><th>Episode</th><th>Title</th><th>Status</th></tr></thead>
+    <tbody>
+      {% for t in trace.targets %}
+        <tr>
+          <td>S{{ t.season_number }}E{{ t.episode_number }}</td>
+          <td>{{ t.title }}</td>
+          <td>{% if t.has_file %}<span class="badge badge-ok">have file</span>{% elif t.attempt_ids %}<span class="badge badge-info">grabbed</span>{% else %}<span class="badge badge-muted">never grabbed</span>{% endif %}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endif %}

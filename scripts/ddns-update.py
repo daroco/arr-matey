@@ -1,22 +1,25 @@
 """
-Keeps the public DNS record for the remote-Jellyfin hostname (watch.<domain>, on
-Cloudflare) pointed at this machine's current WAN IP. Run via pythonw.exe as a
-scheduled task action, same pattern as scripts/rclone-sync.py -- pythonw has no
-console, so nothing flashes on each run, and every outcome (including failures)
-goes to a log file since an uncaught exception would otherwise vanish silently.
+Keeps the public DNS records for this stack's internet-facing hostnames (on
+Cloudflare -- currently watch.<domain>, <domain>, and jellyseerr.<domain>)
+pointed at this machine's current WAN IP. Run via pythonw.exe as a scheduled
+task action, same pattern as scripts/rclone-sync.py -- pythonw has no console,
+so nothing flashes on each run, and every outcome (including failures) goes to
+a log file since an uncaught exception would otherwise vanish silently.
 
 Why this exists at all: the WAN IP on a residential connection is not guaranteed
 static (see README section 6). Caddy's DNS-01 ACME challenge and the router's
-port-443 forward both depend on watch.<domain> resolving to wherever this house
-currently is -- if the IP drifts and the A record doesn't follow, the cert still
-renews fine (DNS-01 only needs the TXT challenge record, not the A record) but
-remote playback silently starts failing to connect.
+port-443 forward both depend on each of these hostnames resolving to wherever
+this house currently is -- if the IP drifts and a record doesn't follow, the
+cert still renews fine (DNS-01 only needs the TXT challenge record, not the A
+record) but remote access to that one app silently starts failing to connect.
 
 Cloudflare's API needs the DNS record's own ID to PATCH it -- there's no
-"upsert by name" endpoint -- so this looks the record up by name first (GET),
+"upsert by name" endpoint -- so this looks each record up by name first (GET),
 then only PATCHes if the current value actually differs. Comparing before
 writing means a no-op run (the common case, IP unchanged) makes one read-only
-API call instead of an unconditional write every few minutes.
+API call per record instead of an unconditional write every few minutes. One
+record's lookup/update failure doesn't stop the others from being checked --
+main() collects failures and reports them all at the end.
 """
 
 import logging
@@ -32,7 +35,7 @@ _env = dotenv_values(ENV_PATH)
 CONFIG_ROOT = _env["CONFIG_ROOT"]
 CF_API_TOKEN = _env["CF_API_TOKEN"]
 CF_ZONE = _env["CF_ZONE"]
-DDNS_RECORD = _env["DDNS_RECORD"]
+DDNS_RECORDS = [r.strip() for r in _env["DDNS_RECORDS"].split(",") if r.strip()]
 NTFY_SERVER = _env.get("NTFY_SERVER", "https://ntfy.sh")
 NTFY_TOPIC = _env.get("NTFY_TOPIC", "")
 
@@ -90,17 +93,17 @@ def get_zone_id():
     return result[0]["id"]
 
 
-def get_record(zone_id):
+def get_record(zone_id, hostname):
     r = requests.get(
         f"{CF_API}/zones/{zone_id}/dns_records",
         headers=cf_headers(),
-        params={"type": "A", "name": DDNS_RECORD},
+        params={"type": "A", "name": hostname},
         timeout=15,
     )
     r.raise_for_status()
     result = r.json()["result"]
     if not result:
-        raise RuntimeError(f"Cloudflare A record not found: {DDNS_RECORD} (create it once manually first)")
+        raise RuntimeError(f"Cloudflare A record not found: {hostname} (create it once manually first)")
     return result[0]
 
 
@@ -119,16 +122,26 @@ def update_record(zone_id, record_id, new_ip):
 def main():
     new_ip = current_wan_ip()
     zone_id = get_zone_id()
-    record = get_record(zone_id)
-    old_ip = record["content"]
 
-    if old_ip == new_ip:
-        log.info(f"no change: {DDNS_RECORD} already {new_ip}")
-        return
+    failures = []
+    for hostname in DDNS_RECORDS:
+        try:
+            record = get_record(zone_id, hostname)
+            old_ip = record["content"]
 
-    update_record(zone_id, record["id"], new_ip)
-    log.info(f"updated: {DDNS_RECORD} {old_ip} -> {new_ip}")
-    notify_ntfy("DDNS updated", f"{DDNS_RECORD}: {old_ip} -> {new_ip}")
+            if old_ip == new_ip:
+                log.info(f"no change: {hostname} already {new_ip}")
+                continue
+
+            update_record(zone_id, record["id"], new_ip)
+            log.info(f"updated: {hostname} {old_ip} -> {new_ip}")
+            notify_ntfy("DDNS updated", f"{hostname}: {old_ip} -> {new_ip}")
+        except Exception as e:
+            log.exception(f"failed to update {hostname}")
+            failures.append(f"{hostname}: {e}")
+
+    if failures:
+        raise RuntimeError(f"{len(failures)} of {len(DDNS_RECORDS)} record(s) failed: {'; '.join(failures)}")
 
 
 def setup_logging():

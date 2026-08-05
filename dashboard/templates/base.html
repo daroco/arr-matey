@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Dashboard{% endblock %} - acquisitions</title>
+  <script src="/static/htmx.min.js"></script>
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_version() }}">
+</head>
+<body>
+  {% if session %}
+  <header>
+    <h1><a href="/">acquisitions dashboard</a></h1>
+    <div class="spacer"></div>
+    <span class="whoami">{{ session['username'] }}{% if session['is_admin'] %} (admin){% endif %}</span>
+    <form method="post" action="/logout" style="margin:0"><button class="secondary" type="submit">Log out</button></form>
+  </header>
+  {% endif %}
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

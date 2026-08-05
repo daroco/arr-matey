@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in - acquisitions dashboard</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_version() }}">
+</head>
+<body>
+  <div class="login-box">
+    <h2>acquisitions dashboard</h2>
+    <p class="muted">Sign in with your Jellyfin account -- same credentials as Jellyfin and Seerr.</p>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <form method="post" action="/login">
+      <input type="text" name="username" placeholder="Jellyfin username" required autofocus>
+      <input type="password" name="password" placeholder="Password" required>
+      <button type="submit" style="width:100%">Sign in</button>
+    </form>
+  </div>
+</body>
+</html>

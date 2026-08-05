@@ -1,0 +1,107 @@
+/* Deliberately plain -- this is a personal home-lab tool, not a product. Dark-only
+   (matches the *arr apps' own default themes this dashboard sits alongside) rather
+   than a full light/dark toggle, to keep the one CSS file small and legible. */
+
+:root {
+  --bg: #14161a; --panel: #1c1f26; --panel-alt: #20242c; --border: #2c313c; --text: #d7dae0; --muted: #838a99;
+  --ok: #3fb950; --warn: #d29922; --err: #f85149; --info: #58a6ff; --accent: #6e9fff;
+  /* Per-card accent rotation for the service-health grid -- purely a visual
+     differentiator (which card is which is already said in text), cycled by
+     position via nth-of-type rather than tied to a specific service, so the CSS
+     doesn't need updating if a service is ever added/removed/reordered. */
+  --acc1: #6e9fff; --acc2: #d29922; --acc3: #b083f0; --acc4: #3fb950; --acc5: #58a6ff; --acc6: #f2789f;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, Segoe UI, sans-serif;
+  margin: 0; padding: 0 1.5rem 3rem;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+header { display: flex; align-items: center; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid var(--border); margin-bottom: 1.5rem; }
+header h1 { font-size: 1.1rem; margin: 0; }
+header .spacer { flex: 1; }
+header .whoami { color: var(--muted); font-size: 0.85rem; }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; }
+tbody tr:nth-child(even) td { background: var(--panel-alt); }
+tr:hover td { background: #262b35; }
+
+.badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 1rem; font-size: 0.75rem; font-weight: 600; }
+.badge-ok { background: rgba(63,185,80,.15); color: var(--ok); }
+.badge-warn { background: rgba(210,153,34,.15); color: var(--warn); }
+.badge-err { background: rgba(248,81,73,.15); color: var(--err); }
+.badge-info { background: rgba(88,166,255,.15); color: var(--info); }
+.badge-muted { background: rgba(131,138,153,.15); color: var(--muted); }
+
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+.health-strip { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.health-pill { font-size: 0.78rem; padding: 0.2rem 0.6rem; border-radius: 1rem; border: 1px solid var(--border); }
+
+.stage-track { display: flex; gap: 0.25rem; margin: 0.5rem 0; flex-wrap: wrap; }
+.stage { padding: 0.25rem 0.6rem; border-radius: 4px; font-size: 0.78rem; border: 1px solid var(--border); }
+.stage-done { background: rgba(63,185,80,.12); border-color: var(--ok); }
+.stage-active { background: rgba(88,166,255,.12); border-color: var(--info); }
+.stage-blocked { background: rgba(248,81,73,.12); border-color: var(--err); }
+.stage-unknown { color: var(--muted); }
+
+.diagnosis { border-left: 3px solid var(--border); padding: 0.5rem 0.75rem; margin: 0.5rem 0; }
+.diagnosis.ok { border-color: var(--ok); }
+.diagnosis.info { border-color: var(--info); }
+.diagnosis.warning { border-color: var(--warn); }
+.diagnosis.error { border-color: var(--err); }
+.diagnosis .headline { font-weight: 600; }
+.diagnosis .since { color: var(--muted); font-size: 0.8rem; }
+
+.attempt-card { border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; margin: 0.5rem 0; }
+.attempt-card .name { font-weight: 600; font-size: 0.9rem; }
+.attempt-card .covers { color: var(--muted); font-size: 0.8rem; }
+
+button, .btn {
+  background: var(--accent); color: #0b1220; border: none; padding: 0.4rem 0.8rem;
+  border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.85rem;
+}
+button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+pre.log { background: #0d0f12; padding: 0.75rem; border-radius: 4px; max-height: 260px; overflow: auto; font-size: 0.78rem; }
+/* auto-fit (not auto-fill) is what makes the last row's card(s) stretch to fill
+   remaining width instead of sitting alone at minmax-width on the left -- confirmed
+   the visual difference against a real 5+1 split (6 service cards, 5 fit one row)
+   that looked broken with auto-fill. */
+.section-label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: .04em; margin: 0.9rem 0 0.4rem; font-weight: 700; }
+.service-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0.85rem; margin: 1rem 0 1.5rem; }
+.service-card {
+  background: var(--panel); border: 1px solid var(--border); border-top: 3px solid var(--acc1);
+  border-radius: 8px; padding: 0.8rem 0.9rem; box-shadow: 0 1px 3px rgba(0,0,0,.25);
+  transition: transform .12s ease, box-shadow .12s ease;
+  /* auto-fit stretches each grid *track* to fill the row (right call when a row is
+     full), but that also stretches a lone leftover card on its own row to the full
+     row width, which looks like an oversized blob rather than a card. Capping the
+     card itself and letting it sit at the start of its track fixes that without
+     giving up auto-fit's "fill the row when there's enough cards" behavior. */
+  max-width: 320px;
+}
+.service-card:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(0,0,0,.35); }
+.service-grid .service-card:nth-of-type(6n+2) { border-top-color: var(--acc2); }
+.service-grid .service-card:nth-of-type(6n+3) { border-top-color: var(--acc3); }
+.service-grid .service-card:nth-of-type(6n+4) { border-top-color: var(--acc4); }
+.service-grid .service-card:nth-of-type(6n+5) { border-top-color: var(--acc5); }
+.service-grid .service-card:nth-of-type(6n+6) { border-top-color: var(--acc6); }
+.service-card.down { border-top-color: var(--err); }
+.service-name { font-weight: 700; font-size: 0.95rem; display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; }
+.service-stat { display: flex; justify-content: space-between; font-size: 0.82rem; padding: 0.15rem 0; border-bottom: 1px dotted var(--border); }
+.service-stat:last-child { border-bottom: none; }
+
+.filter-bar { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
+.filter-bar input[type=text] { background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 0.4rem 0.6rem; border-radius: 4px; min-width: 200px; }
+.filter-bar select { background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 0.4rem 0.6rem; border-radius: 4px; }
+.filter-bar label.checkbox { display: flex; align-items: center; gap: 0.3rem; font-size: 0.85rem; color: var(--muted); }
+
+.login-box { max-width: 320px; margin: 4rem auto; }
+.login-box input { width: 100%; padding: 0.5rem; margin-bottom: 0.75rem; background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 4px; }
+.error { color: var(--err); margin-bottom: 0.75rem; }
+.muted { color: var(--muted); }
+.evidence { font-size: 0.78rem; color: var(--muted); margin-top: 0.25rem; }

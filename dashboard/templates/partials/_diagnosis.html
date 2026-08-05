@@ -1,0 +1,20 @@
+{% for d in diagnoses %}
+  <div class="diagnosis {{ d.severity.value }}">
+    <div class="headline">{{ d.headline }}</div>
+    <div>{{ d.detail }}</div>
+    {% if d.since %}<div class="since">since {{ d.since[:16] }}</div>{% endif %}
+    {% for e in d.evidence %}
+      <div class="evidence">{{ e.label }}{% if e.detail %}: {{ e.detail }}{% endif %}</div>
+    {% endfor %}
+    {% if session and session['is_admin'] %}
+      {% for action_id, params in d.suggested_actions %}
+        <div style="margin-top:0.5rem">
+          <form hx-post="/actions/{{ action_id }}/preview" hx-target="closest .diagnosis" hx-swap="beforeend">
+            {% for k, v in params.items() %}<input type="hidden" name="{{ k }}" value="{{ v or '' }}">{% endfor %}
+            <button type="submit">{{ actions[action_id].label }}</button>
+          </form>
+        </div>
+      {% endfor %}
+    {% endif %}
+  </div>
+{% endfor %}

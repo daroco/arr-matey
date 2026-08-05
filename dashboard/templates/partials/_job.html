@@ -1,0 +1,14 @@
+<div id="job-{{ job['id'] }}" class="card"
+     {% if job['status'] in ('pending', 'running') %}
+     hx-get="/partials/job/{{ job['id'] }}" hx-trigger="every 2s" hx-swap="outerHTML"
+     {% endif %}>
+  <div>
+    <span class="badge badge-{{ 'ok' if job['status'] == 'ok' else 'err' if job['status'] in ('failed','interrupted') else 'info' }}">
+      {{ job['status'] }}
+    </span>
+    <strong>{{ job['action_id'] }}</strong>
+  </div>
+  {% if job['result_text'] %}<div style="white-space:pre-wrap">{{ job['result_text'] }}</div>{% endif %}
+  {% if job['error_text'] %}<div class="error">{{ job['error_text'] }}</div>{% endif %}
+  {% if job['log_tail'] %}<pre class="log">{{ job['log_tail'] }}</pre>{% endif %}
+</div>
