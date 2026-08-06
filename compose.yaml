@@ -124,6 +124,31 @@ services:
       - "6881:6881/udp"
     restart: unless-stopped
 
+  # Confirmed software-only transcoding on the native install this replaced
+  # (encoding.xml's HardwareAccelerationType was "none") -- no GPU device
+  # passthrough needed here. If hardware transcoding is ever turned on later,
+  # that needs its own follow-up (GPU passthrough into a Windows container is
+  # vendor-specific and not a drop-in addition to this block).
+  jellyfin:
+    # Pinned to match the native install's exact version (confirmed via
+    # /System/Info/Public before migration) -- :latest resolved to a newer minor
+    # version whose on-disk DB layout differs (nested data/data/jellyfin.db vs
+    # this version's flat data/jellyfin.db), discovered live when the newer image
+    # silently initialized a fresh empty database instead of using the migrated
+    # one. Bump deliberately later, not implicitly via :latest.
+    image: lscr.io/linuxserver/jellyfin:10.11.8
+    container_name: jellyfin
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${CONFIG_ROOT}/jellyfin:/config
+      - ${MEDIA_ROOT}:/media
+    ports:
+      - "8096:8096"
+    restart: unless-stopped
+
   jellyseerr:
     image: ghcr.io/seerr-team/seerr:latest
     container_name: jellyseerr
@@ -171,6 +196,7 @@ services:
       - caddy_config:/config
     depends_on:
       - jellyseerr
+      - jellyfin
     restart: unless-stopped
 
 volumes:

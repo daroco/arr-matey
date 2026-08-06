@@ -7,9 +7,9 @@ See `ARCHITECTURE.md` for diagrams of the pieces below and how they connect.
 
 **Flow:** Seerr (request) → Sonarr/Radarr (grab logic) → Prowlarr (indexer search,
 with FlareSolverr for Cloudflare-protected sites) → a download client actually does the
-torrenting → finished files land in your movies/TV folders → your existing host Jellyfin
-serves them → Bazarr backfills subtitles. Caddy fronts everything with clean local
-hostnames instead of `ip:port`.
+torrenting → finished files land in your movies/TV folders → Jellyfin serves them →
+Bazarr backfills subtitles. Caddy fronts everything with clean local hostnames instead
+of `ip:port`.
 
 **Two selectable download-client modes**, via `DOWNLOAD_MODE` in `.env`:
 - **`seedbox`** (default) — everything downloads on a remote seedbox: two separate
@@ -27,8 +27,11 @@ Seerr was Jellyseerr until the project merged with Overseerr and renamed itself 
 app, same config/database, just a new image (`ghcr.io/seerr-team/seerr`) and container
 still named `jellyseerr` in this compose file for continuity.
 
-Jellyfin itself is **not** part of this stack — it's assumed to already be running on the
-host, untouched.
+Jellyfin runs as a `compose.yaml` service (`lscr.io/linuxserver/jellyfin`) like every
+other app here — its image tag is pinned to a specific version rather than `:latest`,
+since a version mismatch against an existing library's on-disk layout is a real, sharp
+edge if you're ever migrating an existing native install's data into this stack (see the
+`jellyfin` service's own comment).
 
 Built for Windows + Docker Desktop, with host paths on a `D:` drive. Adjust paths if your
 setup differs.
@@ -48,7 +51,8 @@ setup differs.
 | Radarr | Movie search/grab/organize | 7878 | `radarr.<domain>` |
 | Bazarr | Subtitle fetching for Sonarr/Radarr libraries | 6767 | `bazarr.<domain>` |
 | Seerr | Request front-end — search a title, hit request, it flows to Sonarr/Radarr | 5055 | `jellyseerr.<domain>` |
-| Caddy | Reverse proxy — drops port numbers, gives every service above a clean hostname, (internal-only) injects Basic Auth for the seedbox, and terminates the public HTTPS route to Jellyfin | 80, 443 | `watch.<domain>` also routes here to the host Jellyfin install, over both LAN HTTP and public HTTPS — see section 6 |
+| Jellyfin | Media server — plays back everything landed by Sonarr/Radarr | 8096 | `watch.<domain>` |
+| Caddy | Reverse proxy — drops port numbers, gives every service above a clean hostname, (internal-only) injects Basic Auth for the seedbox, and terminates the public HTTPS route to Jellyfin | 80, 443 | `watch.<domain>` also routes here, over both LAN HTTP and public HTTPS — see section 6 |
 | qBittorrent | **`local` mode only** — the actual torrent client, no seedbox | 8080 | `qbittorrent.<domain>` |
 
 In `seedbox` mode the actual torrent clients (qBittorrent and Transmission) run on the
@@ -119,9 +123,10 @@ Fill in:
   how these get used (Caddy shim + rclone remote).
 - **`local` mode:** `QBT_CATEGORY` — see the Local mode section after section 9.
 
-Create the host directories if they don't already exist, and point your existing Jellyfin
-install's libraries at `MEDIA_ROOT/movies` and `MEDIA_ROOT/tv` — that's the only link
-between this stack and Jellyfin.
+Create the host directories if they don't already exist. Jellyfin's `compose.yaml`
+service mounts `${MEDIA_ROOT}` the same way every other service here does, so its
+libraries just need pointing at `/media/movies` and `/media/tv` (the container paths,
+not host paths) from inside its own admin UI on first run.
 
 ```bash
 docker compose up -d
@@ -209,8 +214,9 @@ Local mode section (after section 9) for `local` mode.
    set subtitle languages/providers.
 
 5. **Seerr** (`:5055`):
-   - Jellyfin URL: `http://host.docker.internal:8096` (Docker Desktop's special DNS name
-     for reaching the host machine from inside a container)
+   - Jellyfin URL: `http://jellyfin:8096` (container-to-container, same pattern as every
+     other service-to-service connection below — not `host.docker.internal`, since
+     Jellyfin is a `compose.yaml` service now, not a host process)
    - External URL: your machine's actual LAN IP, e.g. `http://192.168.x.x:8096` — this is
      just what gets displayed/linked to users, not used for the internal connection
    - Forgot Password URL: optional, safe to leave blank
@@ -233,7 +239,7 @@ the free `<lan-ip>.nip.io` fallback from section 2 if you don't have one:
 | Hostname | Routes to |
 |---|---|
 | `jellyseerr.<domain>` | Seerr |
-| `watch.<domain>` | your host Jellyfin |
+| `watch.<domain>` | Jellyfin |
 | `prowlarr.<domain>` | Prowlarr |
 | `sonarr.<domain>` | Sonarr |
 | `radarr.<domain>` | Radarr |
@@ -898,8 +904,9 @@ source), not service-level stats.
 Runs as a plain host process, not a container — the two script-triggering fix buttons
 need real `subprocess` access to Windows-only scripts (`rclone-sync.py` hardcodes an
 `rclone.exe` path and `CREATE_NO_WINDOW`), the same reason every other scheduled script in
-this repo runs on the host. Caddy fronts it exactly the way it already fronts
-host-installed Jellyfin: `reverse_proxy host.docker.internal:8099`.
+this repo runs on the host. Caddy fronts it via `host.docker.internal`, the special
+Docker Desktop DNS name for reaching a host process from inside a container:
+`reverse_proxy host.docker.internal:8099`.
 
 Reachable two ways, same as Jellyfin/Seerr:
 - **LAN**: `http://stats.{$DOMAIN}`, plain HTTP, no TLS involved (same reasoning as every

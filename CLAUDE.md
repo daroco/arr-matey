@@ -9,9 +9,14 @@ automates movie/TV requests end-to-end: **Seerr** (request UI, container still n
 `jellyseerr` — the project renamed from Jellyseerr to Seerr, same app/config) → **Sonarr /
 Radarr** (grab logic) → **Prowlarr** (indexer aggregation, **FlareSolverr** solves
 Cloudflare-protected indexers) → a download client actually torrents it → finished files
-land in the media library → the user's existing **host-installed Jellyfin** (not part of
-this stack, untouched) serves it → **Bazarr** backfills subtitles. **Caddy** fronts
-everything with clean hostnames instead of `ip:port`.
+land in the media library → **Jellyfin** (a `compose.yaml` service, `lscr.io/
+linuxserver/jellyfin`, pinned rather than `:latest` — see the service's own comment for
+why) serves it → **Bazarr** backfills subtitles. **Caddy** fronts everything with clean
+hostnames instead of `ip:port`. Jellyfin was migrated from a native Windows install into
+this stack; real users/library/watch-history carried over via a one-time data migration
+(see the `jellyfin` service's comment in `compose.yaml` and the container's own
+`/config/data/` layout, which nests `data`/`metadata`/`plugins`/`root` one level deeper
+than the native Windows layout did — a real gotcha if this ever needs redoing).
 
 Mostly infrastructure config (`compose.yaml`, `Caddyfile`, `.env`) plus standalone Python
 automation scripts in `scripts/`, plus one real application: `dashboard/`, a FastAPI app
@@ -108,7 +113,7 @@ The `Caddyfile` has three distinct route classes:
    separate compose project, not managed here) pointing at the host's LAN IP. Guarded by
    a `lanonly` snippet (`not remote_ip private_ranges` → 403) as defense-in-depth, though
    the real control is that port 80 is never forwarded at the router.
-2. **Public HTTPS** — exactly four hostnames (`watch.<domain>` → host Jellyfin,
+2. **Public HTTPS** — exactly four hostnames (`watch.<domain>` → the `jellyfin` service,
    `<domain>` apex + `jellyseerr.<domain>` → Seerr, `stats.<domain>` → the trace
    dashboard), each with a real Let's Encrypt cert
    via the **DNS-01** challenge (`acme_dns cloudflare`, needs `CF_API_TOKEN`) specifically

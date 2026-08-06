@@ -89,7 +89,7 @@ https://jellyseerr.{$DOMAIN}, https://{$DOMAIN} {
 # LAN-only route -- kept exactly as-is so every existing TV/device pointed at
 # this hostname over plain HTTP keeps working unchanged.
 http://watch.{$DOMAIN} {
-	reverse_proxy host.docker.internal:8096
+	reverse_proxy jellyfin:8096
 }
 
 # Public route: real Let's Encrypt cert via the DNS-01 challenge above, reached
@@ -134,7 +134,7 @@ https://watch.{$DOMAIN} {
 			window 1m
 		}
 	}
-	reverse_proxy host.docker.internal:8096 {
+	reverse_proxy jellyfin:8096 {
 		header_up X-Real-IP {client_ip}
 	}
 }

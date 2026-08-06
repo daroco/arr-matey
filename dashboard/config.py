@@ -78,7 +78,11 @@ class Config:
 
         jf = seerr_settings.get("jellyfin", {})
         jf_ip = jf.get("ip", "localhost")
-        if jf_ip == "host.docker.internal":
+        if jf_ip in ("host.docker.internal", "jellyfin"):
+            # "host.docker.internal" was the old host-installed-Jellyfin address;
+            # "jellyfin" is its containerized replacement's service name. Either way
+            # this dashboard runs as a host process, not a container, so it has to
+            # reach the *published* port via localhost, not a container-DNS name.
             jf_ip = "localhost"
         scheme = "https" if jf.get("useSsl") else "http"
         self.jellyfin_base = f"{scheme}://{jf_ip}:{jf.get('port', 8096)}{jf.get('urlBase', '')}"
