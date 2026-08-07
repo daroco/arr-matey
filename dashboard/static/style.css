@@ -96,6 +96,11 @@ pre.log { background: #0d0f12; padding: 0.75rem; border-radius: 4px; max-height:
    collapses to one full-width column on narrow ones via the same auto-fit minmax. */
 .torrent-grid { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
 .torrent-grid .service-card { max-width: none; }
+/* Services grid: a fixed set of exactly four cards (Sonarr/Radarr/Prowlarr/Seerr),
+   same "stretch to fill, no fixed-count leftover case" reasoning as torrent-grid
+   above -- confirmed live: the max-width cap left a wide dead-space gap on desktop
+   with only 4 cards. Same override, same tradeoff. */
+.service-grid .service-card { max-width: none; }
 .service-grid .service-card:nth-of-type(6n+2) { border-top-color: var(--acc2); }
 .service-grid .service-card:nth-of-type(6n+3) { border-top-color: var(--acc3); }
 .service-grid .service-card:nth-of-type(6n+4) { border-top-color: var(--acc4); }
