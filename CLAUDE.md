@@ -176,11 +176,14 @@ skill) — the process runs under Task Scheduler's own session context, so a pla
 
 ## Repo-specific skills
 
-`.claude/skills/` has five skills for the recurring tasks this repo's own history keeps
+`.claude/skills/` has six skills for the recurring tasks this repo's own history keeps
 needing: `caddy-reload`, `expose-service` (new public hostname), `dashboard-restart`,
 `diagnose-connectivity` (systematic checklist for "can't connect to X" -- covers the VPN
-hijacking / Cloudflare outage / hairpin-NAT gotchas below), and `dashboard-add-rule`.
-Reach for these before re-deriving the same debugging path from scratch.
+hijacking / Cloudflare outage / hairpin-NAT gotchas below), `dashboard-add-rule`, and
+`new-machine-setup` (orchestrates `scripts/setup.py` + `scripts/provision.py` plus
+everything those two deliberately don't touch, for standing this stack up from scratch
+on a different machine). Reach for these before re-deriving the same debugging path
+from scratch.
 
 ## Known operational gotchas (not yet in README, worth knowing before debugging blind)
 
