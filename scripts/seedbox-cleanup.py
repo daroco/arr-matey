@@ -31,7 +31,7 @@ from pathlib import Path
 import requests
 from dotenv import dotenv_values
 
-ENV_PATH = Path(r"C:\Users\drcor\acquisitions\.env")
+ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 _env = dotenv_values(ENV_PATH)
 _CONFIG_ROOT = Path(_env["CONFIG_ROOT"])

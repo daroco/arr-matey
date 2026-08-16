@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Library{% endblock %}
+{% block content %}
+  <p><a href="/">&larr; all requests</a></p>
+  <h2>Library completeness</h2>
+  <p class="muted">Every show/movie Sonarr or Radarr has marked monitored but doesn't have a file
+    for yet, sorted worst-first. Counts are cheap (already-fetched data); the reason for a specific
+    gap is a one-click, on-demand check below -- not run automatically for everything on this page,
+    since a single live search can take 10-30+ seconds and a show can have hundreds of gaps.</p>
+
+  <h3 class="section-label">TV shows ({{ series_gaps | length }})</h3>
+  {% if not series_gaps %}
+    <p class="muted">No missing monitored episodes in any show.</p>
+  {% endif %}
+  {% for s in series_gaps %}
+    <div class="diagnosis warning" id="series-gap-{{ s.id }}">
+      <div class="headline">{{ s.title }}</div>
+      <div>{{ s.missing }} of {{ s.total }} monitored episodes missing ({{ s.have }} have a file)</div>
+      {% if session and session['is_admin'] %}
+        <div style="margin-top:0.5rem; display:flex; gap:0.5rem">
+          <form hx-post="/actions/arr_diagnose_series_gap/preview" hx-target="#series-gap-{{ s.id }}" hx-swap="beforeend">
+            <input type="hidden" name="series_id" value="{{ s.id }}">
+            <button type="submit" class="secondary">{{ actions['arr_diagnose_series_gap'].label }}</button>
+          </form>
+          <form hx-post="/actions/arr_search_series/preview" hx-target="#series-gap-{{ s.id }}" hx-swap="beforeend">
+            <input type="hidden" name="series_id" value="{{ s.id }}">
+            <button type="submit">{{ actions['arr_search_series'].label }}</button>
+          </form>
+        </div>
+      {% endif %}
+    </div>
+  {% endfor %}
+
+  <h3 class="section-label">Movies ({{ movie_gaps | length }})</h3>
+  {% if not movie_gaps %}
+    <p class="muted">No missing monitored movies.</p>
+  {% else %}
+    <div class="card" style="padding:0">
+      <table>
+        <thead><tr><th>Title</th><th>Year</th></tr></thead>
+        <tbody>
+          {% for m in movie_gaps %}
+            <tr><td>{{ m.title }}</td><td>{{ m.year or '' }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+{% endblock %}

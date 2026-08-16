@@ -111,6 +111,13 @@ class Config:
         self.bazarr_base = env.get("BAZARR_BASE_URL") or "http://localhost:6767"
         self.seerr_base = env.get("SEERR_BASE_URL") or "http://localhost:5055"
 
+        # Jellyfin admin API key -- lets Sonarr/Radarr's native MediaBrowser (Jellyfin/
+        # Emby) connection trigger a library update directly on import, no dashboard
+        # involvement. Created once by hand in Jellyfin's own Dashboard > API Keys
+        # screen (same reason Seerr's initial Jellyfin connection is a manual one-time
+        # step too: no way to bootstrap the first admin credential via API).
+        self.jellyfin_api_key = env.get("JELLYFIN_API_KEY", "")
+
 
 def check_download_mode_consistency(cfg):
     """DOWNLOAD_MODE (drives this script's branching) and COMPOSE_PROFILES (the
@@ -256,6 +263,43 @@ def configure_download_client(app, implementation, name, category_field, categor
     created = app("POST", "/api/v3/downloadclient", json=body)
     log.info(f"created download client '{name}' (id {created['id']})")
     return created["id"]
+
+
+JELLYFIN_NOTIFICATION_NAME = "Jellyfin"
+
+
+def configure_arr_jellyfin_connection(app, api_key):
+    """Wires Sonarr/Radarr's *native* MediaBrowser connection (their internal name for
+    the Jellyfin/Emby integration -- Jellyfin's API remains compatible since it forked
+    from Emby's MediaBrowser codebase) so each app tells Jellyfin directly to update
+    its library on import, no dashboard/webhook middleman needed. host="jellyfin" (not
+    host.docker.internal) since Sonarr/Radarr are containers on the same compose
+    network as Jellyfin and can reach it by service name directly. No path mapping
+    needed (mapFrom/mapTo left blank) -- Sonarr/Radarr and Jellyfin all see the same
+    ${MEDIA_ROOT}:/media mount, unlike the seedbox's remote paths. Idempotent like
+    every other connection this script wires."""
+    notifications = app("GET", "/api/v3/notification")
+    existing = next((n for n in notifications if n["name"] == JELLYFIN_NOTIFICATION_NAME), None)
+    if existing:
+        body = existing
+    else:
+        schemas = app("GET", "/api/v3/notification/schema")
+        body = next(s for s in schemas if s["implementation"] == "MediaBrowser")
+        body["name"] = JELLYFIN_NOTIFICATION_NAME
+    set_field(body["fields"], "host", "jellyfin")
+    set_field(body["fields"], "port", 8096)
+    set_field(body["fields"], "useSsl", False)
+    set_field(body["fields"], "apiKey", api_key)
+    set_field(body["fields"], "notify", False)
+    set_field(body["fields"], "updateLibrary", True)
+    body["onDownload"] = True
+    body["onUpgrade"] = True
+    if existing:
+        app("PUT", f"/api/v3/notification/{existing['id']}", json=body)
+        log.info(f"Jellyfin connection already existed, refreshed it (id {existing['id']})")
+    else:
+        created = app("POST", "/api/v3/notification", json=body)
+        log.info(f"created Jellyfin connection (id {created['id']})")
 
 
 SAFETY_CF_NAME = "Reject - Executable or Script"
@@ -671,6 +715,15 @@ def main():
 
     log.info("=== Bazarr ===")
     configure_bazarr(cfg)
+
+    log.info("=== Sonarr/Radarr -> Jellyfin (native library update on import) ===")
+    if cfg.jellyfin_api_key:
+        configure_arr_jellyfin_connection(sonarr, cfg.jellyfin_api_key)
+        configure_arr_jellyfin_connection(radarr, cfg.jellyfin_api_key)
+    else:
+        log.warning("JELLYFIN_API_KEY isn't set -- skipping. Create one in Jellyfin's "
+                    "Dashboard > API Keys, add it to .env, and re-run this script to "
+                    "finish wiring it up.")
 
     log.info("=== Seerr ===")
     if seerr_is_initialized(cfg):

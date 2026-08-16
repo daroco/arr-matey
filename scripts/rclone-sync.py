@@ -39,7 +39,9 @@ silently stops notifying while small sidecar files keep working, masking the gap
 
 import logging
 import logging.handlers
+import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -49,9 +51,11 @@ from pathlib import Path
 import requests
 from dotenv import dotenv_values
 
-RCLONE = Path(r"C:\Users\drcor\AppData\Local\Microsoft\WinGet\Packages\Rclone.Rclone_"
-              r"Microsoft.Winget.Source_8wekyb3d8bbwe\rclone-v1.74.3-windows-amd64\rclone.exe")
-ENV_PATH = Path(r"C:\Users\drcor\acquisitions\.env")
+# shutil.which finds rclone on PATH on either OS (winget/scoop/choco on Windows,
+# apt/homebrew on Linux all put it on PATH) -- falls back to the bare name so the
+# actual "rclone not found" error surfaces from subprocess itself rather than here.
+RCLONE = Path(shutil.which("rclone") or "rclone")
+ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 _env = dotenv_values(ENV_PATH)
 MEDIA_ROOT = Path(_env["MEDIA_ROOT"])
@@ -159,7 +163,11 @@ def main():
         proc = subprocess.Popen(
             [str(RCLONE), "sync", remote, local, "--min-age", "30s",
              "--log-file", rclone_log_file, "--log-level", "INFO"],
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            # CREATE_NO_WINDOW only exists on Windows (suppresses the console flash
+            # from launching a console app under Task Scheduler); Linux's cron/systemd
+            # have no window to suppress in the first place, and the constant itself
+            # doesn't exist in the subprocess module there.
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         while proc.poll() is None:
             time.sleep(POLL_SECONDS)

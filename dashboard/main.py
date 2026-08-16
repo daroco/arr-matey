@@ -177,6 +177,21 @@ def create_app():
         return tpl("notifications.html", request, rows=rows, session=session)
 
     # -----------------------------------------------------------------
+    # Library completeness -- which shows/movies are missing episodes, distinct
+    # from the per-request tracing everything else on this page does. Cheap
+    # (already-fetched Snapshot data only); the "why" per show is an on-demand
+    # action from this page, not computed for every gap up front -- see
+    # correlate.build_library_gaps's own docstring for why.
+    # -----------------------------------------------------------------
+
+    @app.get("/library", response_class=HTMLResponse)
+    async def library_gaps(request: Request, session=Depends(require_session)):
+        snap = poller.snapshot
+        series_gaps, movie_gaps = correlate.build_library_gaps(snap) if snap else ([], [])
+        return tpl("library.html", request, series_gaps=series_gaps, movie_gaps=movie_gaps,
+                   session=session, actions=ACTIONS)
+
+    # -----------------------------------------------------------------
     # Single request trace
     # -----------------------------------------------------------------
 

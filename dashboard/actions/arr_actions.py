@@ -176,12 +176,11 @@ def preview_why_not_grabbed(cfg, snap, params):
     )
 
 
-def execute_why_not_grabbed(cfg, params):
-    arr = params["arr"]
-    base, key = (cfg.radarr_base, cfg.radarr_key) if arr == "radarr" else (cfg.sonarr_base, cfg.sonarr_key)
-    id_param = {"movieId": params["movie_id"]} if arr == "radarr" else {"episodeId": params["episode_id"]}
-    releases = arr_api(base, key, "GET", "/api/v3/release", params=id_param) or []
-
+def _summarize_releases(releases):
+    """Shared by execute_why_not_grabbed (one specific episode/movie) and
+    execute_diagnose_series_gap (one representative episode standing in for a
+    whole show's gap) -- same question, same answer shape, just a different
+    caller decides which episode to ask about."""
     if not releases:
         return ActionResult(ok=True, message="Zero releases found on any enabled indexer.",
                              detail="Nothing to reject -- no indexer has this at all right now. Not a "
@@ -201,6 +200,66 @@ def execute_why_not_grabbed(cfg, params):
             reasons = "; ".join(x.get("reason", "?") if isinstance(x, dict) else str(x) for x in r.get("rejections", []))
             lines.append(f"  - {r.get('title', '?')}: {reasons}")
     return ActionResult(ok=True, message=f"{len(releases)} release(s), {len(clean)} not rejected.", detail="\n".join(lines))
+
+
+def execute_why_not_grabbed(cfg, params):
+    arr = params["arr"]
+    base, key = (cfg.radarr_base, cfg.radarr_key) if arr == "radarr" else (cfg.sonarr_base, cfg.sonarr_key)
+    id_param = {"movieId": params["movie_id"]} if arr == "radarr" else {"episodeId": params["episode_id"]}
+    releases = arr_api(base, key, "GET", "/api/v3/release", params=id_param) or []
+    return _summarize_releases(releases)
+
+
+def preview_diagnose_series_gap(cfg, snap, params):
+    """Companion to the /library page's per-show gaps -- same live-search
+    mechanism as preview_why_not_grabbed, but the caller only knows a seriesId,
+    not which specific episode to ask about (a gapped show can have hundreds of
+    missing episodes; searching all of them isn't the point). Checks one
+    representative episode -- the earliest monitored-but-missing one, same choice
+    made by hand investigating this live -- as a stand-in for "is this show's gap
+    a real availability problem or does it just need a search," not an exhaustive
+    per-episode audit."""
+    return PreviewResult(
+        summary="Checks the earliest missing episode as a representative sample (a show can have "
+                "hundreds of gaps -- this isn't an exhaustive per-episode search) against every "
+                "enabled indexer. No download is triggered, nothing is changed. Can take 10-30+ seconds.",
+    )
+
+
+def execute_diagnose_series_gap(cfg, params):
+    series_id = int(params["series_id"])
+    episodes = arr_api(cfg.sonarr_base, cfg.sonarr_key, "GET", "/api/v3/episode", params={"seriesId": series_id}) or []
+    missing = [e for e in episodes if e["monitored"] and not e["hasFile"]]
+    if not missing:
+        return ActionResult(ok=False, message="No missing monitored episodes found -- may have already been fixed.")
+    missing.sort(key=lambda e: (e["seasonNumber"], e.get("episodeNumber", 0)))
+    target = missing[0]
+    releases = arr_api(cfg.sonarr_base, cfg.sonarr_key, "GET", "/api/v3/release",
+                        params={"episodeId": target["id"]}) or []
+    result = _summarize_releases(releases)
+    label = f"S{target['seasonNumber']}E{target.get('episodeNumber', '?')}"
+    result.message = f"Sample: {label} ({len(missing)} missing total) -- {result.message}"
+    return result
+
+
+def preview_search_series(cfg, snap, params):
+    series_id = int(params["series_id"])
+    series = snap.sonarr_series_by_id.get(series_id)
+    title = series["title"] if series else f"series #{series_id}"
+    return PreviewResult(
+        summary=f"Triggers a live search for every monitored, missing episode of \"{title}\" and "
+                f"automatically grabs anything that clears your quality/seeder filters -- the same "
+                f"thing Sonarr's own \"Search Monitored\" button does. Can take a while for a show "
+                f"with a lot of gaps; grabs will appear here as Sonarr finds them, not immediately.",
+    )
+
+
+def execute_search_series(cfg, params):
+    series_id = int(params["series_id"])
+    cmd = arr_api(cfg.sonarr_base, cfg.sonarr_key, "POST", "/api/v3/command",
+                  json={"name": "SeriesSearch", "seriesId": series_id})
+    return ActionResult(ok=True, message=f"Search triggered (command #{cmd['id']}). "
+                                          f"Grabs will appear on the request list as Sonarr finds them.")
 
 
 def execute_bump_min_seeders(cfg, params):

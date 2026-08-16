@@ -49,7 +49,7 @@
 	respond @notlan 403
 }
 
-http://jellyseerr.{$DOMAIN}, http://{$DOMAIN} {
+http://{$DOMAIN} {
 	import lanonly
 	reverse_proxy jellyseerr:5055
 }
@@ -57,13 +57,16 @@ http://jellyseerr.{$DOMAIN}, http://{$DOMAIN} {
 # Public route: same posture as https://watch.{$DOMAIN} below -- real cert via
 # the DNS-01 challenge above, reachable once the router forwards 443 (already
 # true for watch.{$DOMAIN}; Caddy SNI-routes both hostnames off the same
-# listener, so no additional port-forward is needed here). Jellyseerr's own
+# listener, so no additional port-forward is needed here). Seerr's own
 # login (Jellyfin-backed or local, see README section 4) gates access.
-https://jellyseerr.{$DOMAIN}, https://{$DOMAIN} {
+# jellyseerr.{$DOMAIN} used to be routed here too (pre-rename leftover, same
+# backend) -- retired since it was 100% redundant with bare {$DOMAIN}, one
+# fewer public hostname to keep in DNS/DDNS/rate-limit config in sync.
+https://{$DOMAIN} {
 	rate_limit {
 		# Scoped to public (non-LAN) traffic only -- see the comment on the
 		# watch.{$DOMAIN} block below for why.
-		zone jellyseerr_general {
+		zone seerr_general {
 			match {
 				not remote_ip private_ranges
 			}
@@ -71,7 +74,7 @@ https://jellyseerr.{$DOMAIN}, https://{$DOMAIN} {
 			events 300
 			window 1m
 		}
-		zone jellyseerr_login {
+		zone seerr_login {
 			match {
 				path /api/v1/auth/*
 				not remote_ip private_ranges
@@ -152,7 +155,7 @@ http://stats.{$DOMAIN} {
 # traces, only Jellyfin admins can run fix actions -- so exposing it publicly hands
 # out no more access than Jellyfin/Seerr already do.
 https://stats.{$DOMAIN} {
-	# Same rate-limit shape as watch.{$DOMAIN}/jellyseerr.{$DOMAIN} below, including
+	# Same rate-limit shape as watch.{$DOMAIN}/{$DOMAIN} above, including
 	# the `not remote_ip private_ranges` guard -- without it, every LAN device
 	# sharing Docker Desktop's collapsed 172.18.0.1 identity would share one rate
 	# budget (see the Caddyfile history around watch_general for the full story of

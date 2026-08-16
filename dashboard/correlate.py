@@ -66,16 +66,31 @@ REQUEST_STATUS_LABELS = {1: "pending approval", 2: "approved", 3: "declined", 4:
 def _arr_item(req, snap):
     """Returns (kind, arr_id, arr_obj) or (kind, None, None) if the join can't be
     made -- e.g. Seerr's request predates the item existing in Sonarr/Radarr, or a
-    source was unreachable this poll. match_confidence stays 'exact' here always;
-    v1 doesn't implement the tvdbId/tmdbId/title fallback the plan flags as a nice-to-have
-    for when externalServiceId is missing -- that's a known, documented simplification,
-    not an oversight."""
+    source was unreachable this poll.
+
+    Falls back to a tmdbId/tvdbId join when externalServiceId is missing -- confirmed
+    live this isn't a rare edge case: 49 of 172 requests on this stack had a null
+    externalServiceId despite Seerr itself reporting them fully "available"
+    (mediaAddedAt set), which without this fallback showed on the request list as a
+    bare "#<tmdbId>" instead of a title. tmdbId/tvdbId are present on every Seerr
+    media record and every Sonarr/Radarr item regardless, unlike externalServiceId
+    which Seerr apparently doesn't always write back."""
     media = req.get("media", {})
     kind = "movie" if req.get("type") == "movie" else "tv"
     ext_id = media.get("externalServiceId")
     if kind == "movie":
-        return kind, ext_id, snap.radarr_movie_by_id.get(ext_id)
-    return kind, ext_id, snap.sonarr_series_by_id.get(ext_id)
+        arr_obj = snap.radarr_movie_by_id.get(ext_id)
+        if arr_obj is None and media.get("tmdbId"):
+            arr_obj = snap.radarr_movie_by_tmdb_id.get(media["tmdbId"])
+            if arr_obj is not None:
+                ext_id = arr_obj["id"]
+        return kind, ext_id, arr_obj
+    arr_obj = snap.sonarr_series_by_id.get(ext_id)
+    if arr_obj is None and media.get("tvdbId"):
+        arr_obj = snap.sonarr_series_by_tvdb_id.get(media["tvdbId"])
+        if arr_obj is not None:
+            ext_id = arr_obj["id"]
+    return kind, ext_id, arr_obj
 
 
 def build_index(snap):
@@ -212,6 +227,42 @@ def build_service_health(snap, db):
         })
 
     return services + torrent_clients
+
+
+def build_library_gaps(snap):
+    """Which shows/movies are missing episodes -- entirely from already-fetched
+    Snapshot data (same Tier D series/movie objects build_service_health's
+    missing-count stats already read), no new API calls of its own. Answers a
+    different question than that per-service *count*: which specific titles, not
+    just how many seasons/movies total.
+
+    Deliberately does NOT run a live release search for every gap here -- that's
+    exactly what made the same investigation slow/timeout-prone when done by hand
+    (a single episode's live search can take 10-30+ seconds, and a show can have
+    hundreds of missing episodes). This only surfaces cheap counts; the "why" for
+    a specific show is a per-show, on-demand action (arr_actions.py's
+    diagnose_series_gap), same on-demand-because-it's-expensive shape as the
+    request list's "stalled only" filter."""
+    series_gaps = []
+    for s in snap.sonarr_series_by_id.values():
+        stats = s.get("statistics", {})
+        ec, ef = stats.get("episodeCount", 0), stats.get("episodeFileCount", 0)
+        if ec > ef:
+            series_gaps.append({
+                "id": s["id"], "title": s["title"], "missing": ec - ef,
+                "total": ec, "have": ef,
+            })
+    series_gaps.sort(key=lambda r: -r["missing"])
+
+    movie_gaps = []
+    for m in snap.radarr_movie_by_id.values():
+        if m.get("monitored") and not m.get("hasFile"):
+            movie_gaps.append({
+                "id": m["id"], "title": m["title"], "year": m.get("year"),
+            })
+    movie_gaps.sort(key=lambda r: r["title"])
+
+    return series_gaps, movie_gaps
 
 
 def _group_history_by_download_id(history_records):

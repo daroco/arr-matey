@@ -25,11 +25,12 @@ main() collects failures and reports them all at the end.
 import logging
 import logging.handlers
 import sys
+from pathlib import Path
 
 import requests
 from dotenv import dotenv_values
 
-ENV_PATH = r"C:\Users\drcor\acquisitions\.env"
+ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 _env = dotenv_values(ENV_PATH)
 CONFIG_ROOT = _env["CONFIG_ROOT"]

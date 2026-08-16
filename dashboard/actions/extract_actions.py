@@ -6,17 +6,25 @@ against Scrubs S08 and several MythBusters S20 episodes) via 7-Zip, then trigger
 Sonarr/Radarr to rescan the folder and import the now-visible video files.
 
 Host-only by construction, same as script_actions.py's rclone/cleanup triggers --
-7z.exe is a Windows binary, and this whole action only makes sense run from the same
-host that owns the staging filesystem.
+this whole action only makes sense run from the same host that owns the staging
+filesystem, whichever OS that host is.
 """
 
+import os
+import shutil
 import subprocess
 
 from ..clients import local_fs
 from ..clients.base import arr_api
 from ..models import ActionResult, PreviewResult
 
-SEVENZIP = r"C:\Program Files\7-Zip\7z.exe"
+# shutil.which finds 7z on PATH where it's actually there (confirmed: Linux's
+# p7zip-full package installs it as plain "7z" on PATH). The official Windows
+# installer does NOT add itself to PATH though (confirmed live on this machine --
+# shutil.which("7z") returns None despite a working install), so Windows needs an
+# explicit fallback to its default install location; Linux falls back to the bare
+# name so a real "not installed" error surfaces from subprocess itself.
+SEVENZIP = shutil.which("7z") or (r"C:\Program Files\7-Zip\7z.exe" if os.name == "nt" else "7z")
 
 # Container-side paths -- constant regardless of the host's actual drive letter,
 # since every container mounts ${MEDIA_ROOT} at /media (see compose.yaml and

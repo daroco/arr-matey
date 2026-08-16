@@ -1,13 +1,13 @@
 ---
 name: expose-service
-description: Expose a new internal service publicly at a new subdomain (Cloudflare DNS, DDNS, Caddy TLS + rate limiting), following this stack's established pattern. Use when adding a new public hostname like the existing watch/jellyseerr/stats routes.
+description: Expose a new internal service publicly at a new subdomain (Cloudflare DNS, DDNS, Caddy TLS + rate limiting), following this stack's established pattern. Use when adding a new public hostname like the existing watch/apex/stats routes.
 ---
 
 # Expose a new service publicly
 
-This stack already has four public routes (`watch`, apex `{$DOMAIN}` + `jellyseerr`,
-`stats`) all built the exact same way. Follow this pattern rather than inventing a
-new one — README section 6 is the full narrative version of these steps.
+This stack already has three public routes (`watch`, apex `{$DOMAIN}`, `stats`) all
+built the exact same way. Follow this pattern rather than inventing a new one —
+README section 6 is the full narrative version of these steps.
 
 ## Prerequisites this assumes already exist
 

@@ -35,6 +35,7 @@ flowchart LR
     RC -->|local staging folder| SO
     SO -->|import + rename| LIB[("Movies / TV library")]
     LIB --> JF[Jellyfin]
+    SO -.->|"native connection: library update"| JF
     SO -.->|subtitles| BZ[Bazarr]
 
     class QB private
@@ -45,6 +46,18 @@ flowchart LR
 
 > Nothing downloads at home anymore — Sonarr/Radarr only decide *what* and *where*; the
 > seedbox does the actual torrenting for every indexer.
+>
+> The dotted `native connection` edge is Sonarr/Radarr's own Jellyfin/Emby connection
+> (`provision.py`'s `configure_arr_jellyfin_connection`, internally named `MediaBrowser`
+> — Jellyfin's API stayed compatible after forking from Emby's codebase), pointed at
+> `jellyfin:8096` by container DNS name since all three sit on the same compose network.
+> It tells Jellyfin to update its library the moment something imports, same trigger as
+> the solid `import + rename` edge but pushed directly rather than discovered by a scan.
+> This replaced an earlier custom dashboard webhook that did the same job through an
+> extra hop. Jellyfin's own real-time filesystem monitoring (`EnableRealtimeMonitor`,
+> per-library) is also on as a backup path, though it's a known-unreliable one on this
+> stack specifically — `${MEDIA_ROOT}` is a Windows NTFS drive bind-mounted into a Linux
+> container via Docker Desktop, a boundary `inotify` events don't reliably cross.
 
 ---
 
@@ -156,7 +169,7 @@ flowchart TD
     DEV -->|http://radarr.correll.tv| CD
     DEV -->|http://prowlarr.correll.tv| CD
     DEV -->|http://bazarr.correll.tv| CD
-    DEV -->|http://jellyseerr.correll.tv| CD
+    DEV -->|http://correll.tv| CD
     DEV -->|http://watch.correll.tv| CD
     CD --> SO2["sonarr:8989"]
     CD --> RA2["radarr:7878"]
@@ -165,9 +178,9 @@ flowchart TD
     CD --> JS2["jellyseerr:5055"]
     CD --> JF2["host.docker.internal:8096"]
 
-    CF["Cloudflare: public A records"] -.->|"resolves watch/jellyseerr/apex.correll.tv to the WAN IP"| PHONE["Any device off-LAN"]
+    CF["Cloudflare: public A records"] -.->|"resolves watch/apex.correll.tv to the WAN IP"| PHONE["Any device off-LAN"]
     PHONE -->|"https://watch.correll.tv (router forwards :443 only)"| CD2["Caddy :443<br/>real Let's Encrypt certs, DNS-01"]
-    PHONE -->|"https://jellyseerr.correll.tv, https://correll.tv"| CD2
+    PHONE -->|"https://correll.tv"| CD2
     CD2 --> JF2
     CD2 --> JS2
 
@@ -181,9 +194,11 @@ flowchart TD
 > public routes possible at all: Let's Encrypt can't issue a certificate for a name that
 > doesn't resolve publicly, which a made-up TLD or a Pi-hole-only record never would.
 >
-> `watch.correll.tv`, `jellyseerr.correll.tv`, and bare `correll.tv` are deliberately the
-> only hostnames with public DNS records — the same three the Caddyfile's `rate_limit`
-> blocks apply to. Every other `*.correll.tv` name only exists in Pi-hole's local records
+> `watch.correll.tv` and bare `correll.tv` are deliberately the only hostnames with
+> public DNS records — the same two the Caddyfile's `rate_limit` blocks apply to
+> (`jellyseerr.correll.tv` used to be a third, pre-rename leftover pointed at the same
+> Seerr backend as bare `correll.tv` — retired as redundant). Every other `*.correll.tv`
+> name only exists in Pi-hole's local records
 > — there's no public A or CNAME for `sonarr.correll.tv` etc. to even attempt to resolve,
 > and only port 443 is forwarded at the router (never 80), so those apps stay unreachable
 > from outside the LAN by construction rather than by the Caddyfile's `lanonly` guard

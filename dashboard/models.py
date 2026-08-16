@@ -69,6 +69,12 @@ class Snapshot:
     radarr_queue: list = field(default_factory=list)
     sonarr_series_by_id: dict = field(default_factory=dict)
     radarr_movie_by_id: dict = field(default_factory=dict)
+    # Fallback join keys for correlate._arr_item -- Seerr's own externalServiceId can be
+    # null even on a fully "available" request (confirmed live: 49 of 172 requests on
+    # this stack), so the primary join needs a second path via the tmdbId/tvdbId every
+    # request and every Sonarr/Radarr item both carry regardless.
+    sonarr_series_by_tvdb_id: dict = field(default_factory=dict)
+    radarr_movie_by_tmdb_id: dict = field(default_factory=dict)
     sonarr_root_folders: list = field(default_factory=list)
     radarr_root_folders: list = field(default_factory=list)
     sonarr_indexers: list = field(default_factory=list)

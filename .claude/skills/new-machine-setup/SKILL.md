@@ -83,13 +83,15 @@ to know which sections below to skip.
    ```
    Idempotent, safe to re-run. This handles far more than its README description
    suggests — Prowlarr↔Sonarr/Radarr, download client creation, **indexer routing by
-   `downloadClientId`**, Bazarr connections, and (seedbox mode) **Remote Path
+   `downloadClientId`**, Bazarr connections, Sonarr/Radarr's native Jellyfin
+   connection (library update on import, needs `JELLYFIN_API_KEY` in `.env` — skipped
+   with a warning if blank, see step 8), and (seedbox mode) **Remote Path
    Mappings and the seedbox's own client ratio/privacy settings**. Confirm it exits
    clean; re-run once if indexer sync briefly overwrote something (expected, it
    self-heals within the same run per its own README section).
 
-8. **The genuinely manual steps** — `provision.py` deliberately skips these three
-   because they need real credentials or human judgment, not because it forgot:
+8. **The genuinely manual steps** — `provision.py` deliberately skips these because
+   they need real credentials or human judgment, not because it forgot:
    - **Prowlarr indexer accounts** (`:9696` → Indexers → +): the user's own
      tracker/indexer accounts. Nothing to automate here.
    - **FlareSolverr tagging** for Cloudflare-protected indexers (README section 4,
@@ -102,6 +104,11 @@ to know which sections below to skip.
      process, so this is *not* `host.docker.internal`). Also add Sonarr/Radarr as
      request targets here (hostname + API key + root folders `/media/tv` /
      `/media/movies`) if `provision.py`'s wiring didn't already cover it.
+   - **`JELLYFIN_API_KEY`** (Jellyfin's own Dashboard → Advanced → API Keys → `+`):
+     needed so `provision.py` can wire Sonarr/Radarr's native Jellyfin connection
+     (step 7). Same reason as Seerr's connection above — no way to bootstrap the
+     first admin credential via API. Add it to `.env` and re-run `provision.py` if it
+     was skipped the first time through.
 
 9. **Public exposure wanted?** (README section 6, or use the `expose-service` skill
    for the exact pattern once the first hostname is live):

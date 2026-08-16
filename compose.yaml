@@ -194,6 +194,13 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
       - caddy_config:/config
+    # Caddy's only remaining use of host.docker.internal is the dashboard's two
+    # routes (dashboard/ runs as a host process, not a container). Docker Desktop
+    # (Mac/Windows) resolves that hostname automatically; native Linux Docker Engine
+    # does not unless told to -- this line is a no-op on Desktop and the actual fix
+    # on Linux, the documented cross-platform way to get the same hostname either way.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - jellyseerr
       - jellyfin

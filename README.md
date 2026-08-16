@@ -50,7 +50,7 @@ setup differs.
 | Sonarr | TV show search/grab/organize | 8989 | `sonarr.<domain>` |
 | Radarr | Movie search/grab/organize | 7878 | `radarr.<domain>` |
 | Bazarr | Subtitle fetching for Sonarr/Radarr libraries | 6767 | `bazarr.<domain>` |
-| Seerr | Request front-end — search a title, hit request, it flows to Sonarr/Radarr | 5055 | `jellyseerr.<domain>` |
+| Seerr | Request front-end — search a title, hit request, it flows to Sonarr/Radarr | 5055 | `<domain>` (apex) |
 | Jellyfin | Media server — plays back everything landed by Sonarr/Radarr | 8096 | `watch.<domain>` |
 | Caddy | Reverse proxy — drops port numbers, gives every service above a clean hostname, (internal-only) injects Basic Auth for the seedbox, and terminates the public HTTPS route to Jellyfin | 80, 443 | `watch.<domain>` also routes here, over both LAN HTTP and public HTTPS — see section 6 |
 | qBittorrent | **`local` mode only** — the actual torrent client, no seedbox | 8080 | `qbittorrent.<domain>` |
@@ -139,9 +139,11 @@ reach it.
 Once every container has started **at least once** (so each app has generated its own
 config file/API key on disk), the rest of sections 4 and 9 — Prowlarr's connections to
 Sonarr/Radarr, the download client(s), indexer routing, Bazarr's connections, Seerr's
-connections, and (seedbox mode) Remote Path Mappings and the seedbox's own
-qBittorrent/Transmission ratio and privacy settings — can be wired up in one shot instead
-of by hand:
+connections, Sonarr/Radarr's native Jellyfin connection (so new imports trigger a
+library update with no manual refresh — needs `JELLYFIN_API_KEY` in `.env`, created by
+hand in Jellyfin's own Dashboard > API Keys; skipped with a warning if that's blank),
+and (seedbox mode) Remote Path Mappings and the seedbox's own qBittorrent/Transmission
+ratio and privacy settings — can be wired up in one shot instead of by hand:
 
 ```bash
 pip install -r scripts/requirements.txt
@@ -238,7 +240,7 @@ the free `<lan-ip>.nip.io` fallback from section 2 if you don't have one:
 
 | Hostname | Routes to |
 |---|---|
-| `jellyseerr.<domain>` | Seerr |
+| `<domain>` (apex) | Seerr |
 | `watch.<domain>` | Jellyfin |
 | `prowlarr.<domain>` | Prowlarr |
 | `sonarr.<domain>` | Sonarr |
@@ -296,7 +298,7 @@ other device), add hosts-file entries instead of relying on DNS for that one mac
 3. Add one line per hostname (substituting your actual `DOMAIN`), all pointing at
    loopback:
    ```
-   127.0.0.1 jellyseerr.<domain>
+   127.0.0.1 <domain>
    127.0.0.1 watch.<domain>
    127.0.0.1 prowlarr.<domain>
    127.0.0.1 sonarr.<domain>
@@ -318,9 +320,9 @@ involved. If a browser's "HTTPS-first" mode tries `https://` before `http://` fo
 these, it gets connection-refused (nothing is listening on 443 for them) rather than a
 certificate warning, and falls back to plain HTTP automatically.
 
-`watch.{$DOMAIN}`, `{$DOMAIN}` (apex), and `jellyseerr.{$DOMAIN}` are the exceptions,
-covered next — each has both an `http://` block (LAN, unchanged) and a real `https://`
-block with a genuine Let's Encrypt cert (public).
+`watch.{$DOMAIN}` and `{$DOMAIN}` (apex) are the exceptions, covered next — each has
+both an `http://` block (LAN, unchanged) and a real `https://` block with a genuine
+Let's Encrypt cert (public).
 
 ---
 
@@ -337,8 +339,8 @@ real CVEs over the years — so keeping them reachable only via a private mesh i
 an open port is the safer default. Downside: every device that wants access needs the
 Tailscale client installed, which rules out most TVs.
 
-**Port forward + real domain + Caddy TLS (what `watch.{$DOMAIN}` and `{$DOMAIN}` /
-`jellyseerr.{$DOMAIN}` use).** Only Jellyfin and Seerr are exposed this way — the *arr apps
+**Port forward + real domain + Caddy TLS (what `watch.{$DOMAIN}` and `{$DOMAIN}`
+use).** Only Jellyfin and Seerr are exposed this way — the *arr apps
 are never forwarded, and the `lanonly` snippet in the `Caddyfile` blocks them at the app
 layer too as defense in depth (see below). Both public apps sit behind their own login
 (Jellyfin's own auth; Seerr's Jellyfin-backed or local login, see section 4's Seerr step),
@@ -361,15 +363,14 @@ Setup:
 1. **Register a real domain** if you don't already own one — this stack's own reference
    deployment uses `correll.tv`. A domain you already use for the LAN-only hostnames
    (section 5) works fine; the public routes are additional hostnames on it
-   (`watch.{$DOMAIN}`, and optionally `{$DOMAIN}` / `jellyseerr.{$DOMAIN}` for Seerr),
-   not a second domain.
+   (`watch.{$DOMAIN}`, and optionally `{$DOMAIN}` apex for Seerr), not a second domain.
 2. **Add the domain to Cloudflare** (free plan) and point the registrar's nameservers at
    Cloudflare's. This is what makes DNS-01 possible — Caddy's `acme_dns cloudflare`
    directive needs the zone to actually live there.
 3. **Create one `A` record per public hostname** you want (`watch`, and optionally
-   `{$DOMAIN}`/apex plus `jellyseerr` for Seerr) → your current WAN IP (find it at
+   `{$DOMAIN}`/apex for Seerr) → your current WAN IP (find it at
    `https://api.ipify.org`). Each can be either DNS-only (grey cloud) or **Proxied**
-   (orange cloud, what this stack's reference deployment uses for all three) — DNS-01
+   (orange cloud, what this stack's reference deployment uses for both) — DNS-01
    only ever touches the separate `_acme-challenge` TXT record per hostname, so a
    record's proxy status has no effect on cert issuance or renewal either way. Proxied
    does mean routing traffic through Cloudflare's CDN, which is against their free/Pro
@@ -388,7 +389,7 @@ Setup:
 4. **Create a scoped API token**: Cloudflare dashboard → My Profile → API Tokens →
    Create Token → permissions `Zone:DNS:Edit`, resource restricted to this one zone. Put
    it in `.env` as `CF_API_TOKEN`, along with `ACME_EMAIL`, `CF_ZONE`, and
-   `DDNS_RECORDS=watch.{$DOMAIN},{$DOMAIN},jellyseerr.{$DOMAIN}` (comma-separated list —
+   `DDNS_RECORDS=watch.{$DOMAIN},{$DOMAIN}` (comma-separated list —
    include only the hostnames you actually created records for; see `.env.example` for
    the full description of each var).
 5. **Free port 443 on the host for Caddy** if something else already owns it — this
@@ -421,7 +422,7 @@ Setup:
    already sees the real client IP via the `X-Forwarded-*`/`X-Real-IP` headers Caddy sets.
 
 **Rate limiting.** `Dockerfile.caddy` also builds in `mholt/caddy-ratelimit`, and the
-`https://watch.{$DOMAIN}` and `https://{$DOMAIN}, https://jellyseerr.{$DOMAIN}` blocks in
+`https://watch.{$DOMAIN}` and `https://{$DOMAIN}` blocks in
 the Caddyfile each apply it per-visitor: a generous general ceiling (300 req/min) that
 shouldn't affect real browsing/streaming, plus a tighter zone (10 req/min) scoped to each
 app's own login endpoint specifically (Jellyfin's `/Users/AuthenticateByName`; Seerr's
@@ -849,6 +850,23 @@ unextracted RAR archives and import, or run `rclone-sync.py`/`seedbox-cleanup.py
 immediately instead of waiting for their schedule. The cleanup button's preview is
 literally that script's own `--dry-run` output — nothing to reimplement, it already makes
 the exact judgment call the preview needs.
+
+### Library completeness (`/library`)
+
+A second page, distinct from the per-request tracing above: which shows/movies Sonarr
+or Radarr have marked monitored but don't actually have a file for yet, sorted
+worst-first. Pulled entirely from already-fetched data (Sonarr/Radarr's own
+`episodeCount`/`episodeFileCount` stats) — no new API calls just to render the list.
+Deliberately **not** a total inventory of the whole library, just what's missing; and
+deliberately does **not** run a live release search for every gap up front, since a
+single search can take 10-30+ seconds and a show can have hundreds of gaps. Two
+one-click actions per gapped show instead: **Diagnose (sample search)** checks one
+representative missing episode against every indexer and shows what it finds
+(read-only), and **Search now** triggers Sonarr's own live search for every missing
+episode of that show (the same thing its "Search Monitored" button does).
+
+New content showing up in Jellyfin without a manual scan is a separate concern from
+this page — see the note on Sonarr/Radarr's native Jellyfin connection below.
 
 ### Push notifications
 

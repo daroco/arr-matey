@@ -11,6 +11,7 @@
   {% if session %}
   <header>
     <h1><a href="/">acquisitions dashboard</a></h1>
+    <a href="/library" class="secondary-link">Library</a>
     <div class="spacer"></div>
     <div id="notif-badge-wrap" hx-get="/partials/notif-badge" hx-trigger="load, every 30s" hx-swap="innerHTML">
       <a href="/notifications" class="bell-link" title="Notifications">&#128276;</a>

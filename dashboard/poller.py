@@ -66,7 +66,9 @@ class Poller:
                 snap.seerr_requests = self.snapshot.seerr_requests
             if not fetch_slow:
                 snap.sonarr_series_by_id = self.snapshot.sonarr_series_by_id
+                snap.sonarr_series_by_tvdb_id = self.snapshot.sonarr_series_by_tvdb_id
                 snap.radarr_movie_by_id = self.snapshot.radarr_movie_by_id
+                snap.radarr_movie_by_tmdb_id = self.snapshot.radarr_movie_by_tmdb_id
                 snap.sonarr_root_folders = self.snapshot.sonarr_root_folders
                 snap.radarr_root_folders = self.snapshot.radarr_root_folders
                 snap.sonarr_indexers = self.snapshot.sonarr_indexers

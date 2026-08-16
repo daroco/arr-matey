@@ -113,9 +113,10 @@ The `Caddyfile` has three distinct route classes:
    separate compose project, not managed here) pointing at the host's LAN IP. Guarded by
    a `lanonly` snippet (`not remote_ip private_ranges` → 403) as defense-in-depth, though
    the real control is that port 80 is never forwarded at the router.
-2. **Public HTTPS** — exactly four hostnames (`watch.<domain>` → the `jellyfin` service,
-   `<domain>` apex + `jellyseerr.<domain>` → Seerr, `stats.<domain>` → the trace
-   dashboard), each with a real Let's Encrypt cert
+2. **Public HTTPS** — exactly three hostnames (`watch.<domain>` → the `jellyfin` service,
+   `<domain>` apex → Seerr, `stats.<domain>` → the trace dashboard; `jellyseerr.<domain>`
+   used to also route to Seerr as a pre-rename leftover, retired as redundant), each
+   with a real Let's Encrypt cert
    via the **DNS-01** challenge (`acme_dns cloudflare`, needs `CF_API_TOKEN`) specifically
    *because* it only needs port 443 forwarded — port 80 stays unforwarded permanently, so
    every LAN-only route is unreachable from outside by construction. Cloudflare-proxied
@@ -136,9 +137,16 @@ The `Caddyfile` has three distinct route classes:
 `python-dotenv`, `PyYAML`), each reads `.env` directly rather than relying on shell
 env vars:
 - `setup.py` — interactive `.env` wizard, no dependencies, doesn't touch Docker/APIs.
-- `provision.py` — idempotent bootstrap wiring every *arr connection via API.
+- `provision.py` — idempotent bootstrap wiring every *arr connection via API, including
+  Sonarr/Radarr's *native* Jellyfin/Emby connection (`MediaBrowser` notification,
+  `configure_arr_jellyfin_connection`) so each app tells Jellyfin directly to update its
+  library on import/upgrade — needs `JELLYFIN_API_KEY` in `.env` (created by hand in
+  Jellyfin's own Dashboard > API Keys, same one-time-manual-step reason as Seerr's
+  initial Jellyfin connection). Gated on that key being set; skips with a warning
+  otherwise. This replaced an earlier custom dashboard webhook for the same purpose —
+  prefer this native connection over reinventing that, if it's ever missing again.
 - `rclone-sync.py` / `seedbox-cleanup.py` — seedbox-mode-only scheduled tasks.
-- `ddns-update.py` — keeps the four public Cloudflare A records pointed at the current
+- `ddns-update.py` — keeps the three public Cloudflare A records pointed at the current
   WAN IP (`DDNS_RECORDS`, comma-separated); per-record error handling so one failure
   doesn't block the others, only raises/notifies after trying all of them.
 
@@ -174,6 +182,15 @@ the skill above is automatically covered, nothing extra to wire up. Registered a
 skill) — the process runs under Task Scheduler's own session context, so a plain
 `Stop-Process` from an unrelated shell can silently fail to kill it.
 
+`/library` is a second dashboard page, distinct from the per-request tracing above --
+"library completeness," which shows/movies Sonarr/Radarr have marked monitored but
+don't have a file for yet (`correlate.build_library_gaps`, purely from already-fetched
+Snapshot data, no new API calls). Deliberately does **not** run a live release search
+for every gap up front -- a single episode's search can take 10-30+ seconds and a show
+can have hundreds of gaps -- the "why" for a specific show is an on-demand,
+one-click action (`arr_diagnose_series_gap`/`arr_search_series`) from that page instead.
+Not a total-inventory view of the whole library, just what's missing.
+
 ## Repo-specific skills
 
 `.claude/skills/` has six skills for the recurring tasks this repo's own history keeps
@@ -203,3 +220,24 @@ from scratch.
 - **Cloudflare's own API can have real outages independent of DNS/edge health** — check
   `cloudflarestatus.com` before assuming a local config problem when only API calls
   (not the actual proxied sites) are failing with `521`s or timeouts.
+- **Caddy does not log successful requests to `docker logs` by default** — no `log`
+  directive is configured anywhere in the `Caddyfile`, so only `http.log.error` entries
+  ever show up. Zero log lines is *not* evidence that nothing reached Caddy; it just
+  means nothing *failed*. Confirmed live: this produced a false "the origin is still
+  unreachable" conclusion during a real debugging session, when the actual problem
+  (a dead Spectrum modem, confirmed independently via the ISP's own status page) had
+  already been fixed. Add a real `log` directive before trusting log-absence as a signal.
+- **Jellyfin's `EnableRealtimeMonitor` (per-library, in each library's `options.xml`
+  under `${CONFIG_ROOT}/jellyfin/data/root/default/<Library>/`) is unreliable on this
+  stack specifically** because `${MEDIA_ROOT}` is a raw Windows NTFS drive bind-mounted
+  into a Linux container via Docker Desktop — a boundary `inotify` events don't reliably
+  cross. It's enabled on both libraries as of this writing, but Sonarr/Radarr's *native*
+  Jellyfin/Emby connection (see `provision.py` above) is the reliable path; real-time
+  monitoring is a backup, not the primary mechanism.
+- **Always check for an active Jellyfin session (`docker logs jellyfin` for recent
+  `SessionManager`/transcode activity) before restarting the `jellyfin` container** —
+  restarting it drops any in-progress playback with no warning to the viewer. This has
+  actually happened (a live session got cut mid-transcode by a routine restart). A
+  restart also takes several minutes to fully come back (keyframe/chapter extraction
+  runs on boot for a library this size) — expect `503`s from `/System/Ping` during that
+  window, not a crash.

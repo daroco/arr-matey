@@ -97,8 +97,10 @@ def fetch_snapshot(db, cfg, *, fetch_history=True, fetch_slow=True):
     if fetch_slow:
         series_list = guard(db, "sonarr", lambda: sonarr.all_series(), [])
         snap.sonarr_series_by_id = {s["id"]: s for s in series_list}
+        snap.sonarr_series_by_tvdb_id = {s["tvdbId"]: s for s in series_list if s.get("tvdbId")}
         movie_list = guard(db, "radarr", lambda: radarr.all_movies(), [])
         snap.radarr_movie_by_id = {m["id"]: m for m in movie_list}
+        snap.radarr_movie_by_tmdb_id = {m["tmdbId"]: m for m in movie_list if m.get("tmdbId")}
         snap.sonarr_root_folders = guard(db, "sonarr", lambda: sonarr.root_folders(), [])
         snap.radarr_root_folders = guard(db, "radarr", lambda: radarr.root_folders(), [])
         snap.sonarr_indexers = guard(db, "sonarr", lambda: sonarr.indexers(), [])

@@ -57,6 +57,18 @@ ACTIONS = {
         requires_mode=None, single_flight=False, is_subprocess=False,
         preview=arr_actions.preview_why_not_grabbed, execute=arr_actions.execute_why_not_grabbed,
     ),
+    "arr_diagnose_series_gap": Action(
+        id="arr_diagnose_series_gap", label="Diagnose (sample search)",
+        description="Live-searches one representative missing episode for a show and shows what it finds. Read-only, no mutation.",
+        requires_mode=None, single_flight=False, is_subprocess=False,
+        preview=arr_actions.preview_diagnose_series_gap, execute=arr_actions.execute_diagnose_series_gap,
+    ),
+    "arr_search_series": Action(
+        id="arr_search_series", label="Search now",
+        description="Triggers Sonarr's own live search for every missing monitored episode of this show and grabs anything that clears your filters.",
+        requires_mode=None, single_flight=False, is_subprocess=False,
+        preview=arr_actions.preview_search_series, execute=arr_actions.execute_search_series,
+    ),
     "arr_manual_import": Action(
         id="arr_manual_import", label="Confirm and import",
         description="Confirms Sonarr/Radarr's own best-guess match for a file stuck needing Manual Import and imports it.",
