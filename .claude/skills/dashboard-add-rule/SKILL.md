@@ -83,6 +83,14 @@ through this exact loop (see below), and there will be more.
   this guard, the rule misfires forever on an already-successfully-imported download,
   since Sonarr's own import moves the extracted video out of staging, leaving only the
   RAR volumes behind and making "no adjacent video" look true again for the wrong reason.
+  Two more things confirmed live (Barbie 2023, 8.9 GB; MythBusters S20E11): 7-Zip must
+  write into a sibling `_extracting/` folder and only *move* into the torrent folder
+  after "Everything is Ok" — extracting in place races Sonarr/Radarr's own periodic
+  completed-download scan, which imports the half-written (zero-filled) file, after
+  which `seedbox-cleanup.py` removes the torrent as "imported" and the RARs are gone
+  for good. And the 7z `subprocess` timeout has to be hours, not 600s — a killed 7z
+  leaves a preallocated partial video that `find_unextracted_rars` then treats as
+  "already extracted".
 
 ## Notifications piggyback on this for free
 

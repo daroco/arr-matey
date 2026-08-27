@@ -13,6 +13,7 @@ filesystem, whichever OS that host is.
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 from ..clients import local_fs
 from ..clients.base import arr_api
@@ -58,6 +59,22 @@ def preview_extract_archive(cfg, snap, params):
     )
 
 
+# Where 7-Zip writes while it works. Confirmed live (Barbie 2023, an 8.9 GB archive;
+# MythBusters S20E11): extracting straight into the torrent's own folder is a race
+# against Sonarr/Radarr's periodic completed-download scan -- it sees a video file
+# appear, imports it while 7z is still writing (a preallocated, zero-filled tail),
+# and the library ends up with a truncated file that plays fine until it doesn't.
+# Cleanup then removes the torrent as "imported" and the RARs are gone for good.
+# So: extract into a sibling folder no torrent is named after (the *arr scan only
+# looks at folders matching a tracked torrent's name), and move the finished
+# files into place only after 7z says "Everything is Ok".
+EXTRACT_TMP_DIRNAME = "_extracting"
+
+# An 8.9 GB archive took well over 10 minutes on this box; 600s killed 7z mid-file.
+# Generous ceiling -- this runs on the jobs thread, not a request handler.
+SEVENZIP_TIMEOUT_SECONDS = 4 * 3600
+
+
 def execute_extract_archive(cfg, params):
     staging_root = _staging_root(cfg, params["client"])
     rars = local_fs.find_unextracted_rars(params["torrent_name"], staging_root)
@@ -67,14 +84,32 @@ def execute_extract_archive(cfg, params):
     results = []
     failed = []
     for rar in rars:
-        proc = subprocess.run(
-            [SEVENZIP, "x", str(rar), f"-o{rar.parent}", "-y"],
-            capture_output=True, text=True, timeout=600,
-        )
-        ok = "Everything is Ok" in proc.stdout
-        results.append(f"{rar.name}: {'OK' if ok else 'FAILED'}")
-        if not ok:
+        tmp_dir = Path(staging_root) / EXTRACT_TMP_DIRNAME / params["torrent_name"] / rar.stem
+        shutil.rmtree(tmp_dir, ignore_errors=True)  # a previous killed/failed attempt's leftovers
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            proc = subprocess.run(
+                [SEVENZIP, "x", str(rar), f"-o{tmp_dir}", "-y"],
+                capture_output=True, text=True, timeout=SEVENZIP_TIMEOUT_SECONDS,
+            )
+            ok = "Everything is Ok" in proc.stdout
+        except subprocess.TimeoutExpired:
+            ok = False
+        if ok:
+            # Only now is anything visible where Sonarr/Radarr will look.
+            for extracted in tmp_dir.iterdir():
+                shutil.move(str(extracted), str(rar.parent / extracted.name))
+        else:
             failed.append(rar.name)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        results.append(f"{rar.name}: {'OK' if ok else 'FAILED'}")
+
+    # Tidy the per-torrent temp parent (and _extracting itself) if nothing else is in flight.
+    for d in (Path(staging_root) / EXTRACT_TMP_DIRNAME / params["torrent_name"], Path(staging_root) / EXTRACT_TMP_DIRNAME):
+        try:
+            d.rmdir()
+        except OSError:
+            pass
 
     if failed:
         return ActionResult(
