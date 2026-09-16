@@ -350,6 +350,14 @@ def build_attempts_for_history(history_records, snap, cfg, is_seedbox):
             grabbed_at=grabbed["date"] if grabbed else None,
         )
         attempt.covers = [r.get("episodeId") for r in imported_events if r.get("episodeId")]
+        # Sonarr history carries episodeId, Radarr's carries movieId; every event type
+        # (grabbed/downloadFailed/imported) carries one -- confirmed live against a real
+        # downloadFailed record. Dedup but keep first-seen order.
+        attempt.targeted = list(dict.fromkeys(
+            tid for r in recs_sorted
+            for tid in [r.get("episodeId") or r.get("movieId")]
+            if tid
+        ))
         attempt.torrent = snap.torrents_by_hash.get(download_id)
 
         if imported_events:

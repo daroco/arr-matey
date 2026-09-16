@@ -119,7 +119,13 @@ class Attempt:
     torrent_name: str
     client: str | None
     indexer: str | None
-    covers: list = field(default_factory=list)   # episode/movie ids this attempt covers
+    covers: list = field(default_factory=list)   # episode/movie ids this attempt successfully IMPORTED
+    # Every episode/movie id this attempt was *for*, regardless of outcome (grabbed,
+    # failed, imported). Distinct from `covers` on purpose: `covers` is imported-only
+    # because correlate.py uses it to answer "which attempt produced this file", while
+    # a FAILED attempt imports nothing and would otherwise have no link back to the
+    # episode it was trying to get. rules.r_import_failed needs that link.
+    targeted: list = field(default_factory=list)
     grabbed_at: str | None = None
     stages: list = field(default_factory=list)     # list[StageState]
     diagnoses: list = field(default_factory=list)  # list[Diagnosis]

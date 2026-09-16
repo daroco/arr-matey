@@ -168,11 +168,53 @@ def r_unextracted_archive(attempt, staging_root, arr):
     )
 
 
-def r_import_failed(attempt, snap):
+def _superseded_by_successful_import(attempt, targets):
+    """The second suppressor (see r_healthy_awaiting_cleanup for the first, and the
+    README's max_ratio_act=0 warning for why crying wolf on a healthy terminal state is
+    the worst failure this dashboard can have).
+
+    A failed grab is only a *problem* if the thing it was trying to get is still
+    missing. When a different release for the same episode/movie landed successfully,
+    the failure is just history -- often literally the cause of the success, since
+    marking a grab failed is what makes Sonarr/Radarr go find another one.
+
+    Confirmed live (Ted Lasso S04E02/03/04): three x265 grabs were marked failed at
+    19:41:27-31Z and the WEB-DL replacements imported at 19:42-19:43Z, one minute
+    later. The dashboard reported the first half of that exchange as an open ERROR
+    indefinitely. Same pattern simultaneously on X-Men '97 S02E08/E09, Lanterns S01E02
+    and Reacher S04E05 -- 8 of 11 open import_failed diagnoses were this false
+    positive, i.e. the rule was ~2/3 noise.
+
+    Why r_import_failed's existing `was_imported` check doesn't already cover it: that
+    check is scoped to the *same* downloadId, and a failed attempt by definition never
+    imported anything. The successful import came from a sibling attempt, which the
+    per-attempt view can't see -- hence needing the trace's targets here.
+
+    This also (deliberately) suppresses a failed *upgrade* attempt on an episode that
+    still has its older file: the episode is watchable and Sonarr will retry on its own
+    schedule, so it isn't a stuck request.
+
+    Conservative by construction: if we can't tell which targets this attempt was for,
+    we do NOT suppress. A missed suppression is a nuisance; a wrong one hides a real
+    stuck download."""
+    if not targets:
+        return False
+    targeted_ids = set(attempt.targeted) | set(attempt.covers)
+    if not targeted_ids:
+        return False
+    relevant = [t for t in targets if t.arr_id in targeted_ids]
+    if not relevant:
+        return False
+    return all(t.has_file for t in relevant)
+
+
+def r_import_failed(attempt, snap, targets=None):
     was_imported = False
     for s in attempt.stages:
         if s.stage.value == "imported":
             if s.status == "blocked":
+                if _superseded_by_successful_import(attempt, targets):
+                    return None
                 detail = "; ".join(e.get("detail", "") for e in s.evidence if e.get("detail")) or "no message recorded"
                 return Diagnosis(
                     rule_id="import_failed", severity=Severity.ERROR,
@@ -336,7 +378,7 @@ def evaluate_trace(trace, snap, db, cfg, is_seedbox, wrapper_log_summary=None):
     arr = "radarr" if trace.media_type == "movie" else "sonarr"
     for attempt in trace.attempts.values():
         attempt.diagnoses = evaluate_attempt(attempt, db, cfg, is_seedbox, wrapper_log_summary, arr)
-        d = r_import_failed(attempt, snap)
+        d = r_import_failed(attempt, snap, trace.targets)
         if d:
             attempt.diagnoses.append(d)
     d = r_never_grabbed(trace)
