@@ -340,7 +340,9 @@ an open port is the safer default. Downside: every device that wants access need
 Tailscale client installed, which rules out most TVs.
 
 **Port forward + real domain + Caddy TLS (what `watch.{$DOMAIN}` and `{$DOMAIN}`
-use).** Only Jellyfin and Seerr are exposed this way — the *arr apps
+use).** Only Jellyfin and Seerr are exposed this way — plus, built the exact same way
+and each behind its own login, the trace dashboard at `stats.{$DOMAIN}` (section 10) and
+RomM at `games.{$DOMAIN}` (its own section below) — the *arr apps
 are never forwarded, and the `lanonly` snippet in the `Caddyfile` blocks them at the app
 layer too as defense in depth (see below). Both public apps sit behind their own login
 (Jellyfin's own auth; Seerr's Jellyfin-backed or local login, see section 4's Seerr step),
@@ -410,7 +412,14 @@ Setup:
    as `scripts/rclone-sync.py`. Schedule it every few minutes the same way as the other
    scheduled scripts in this repo (Task Scheduler, `pythonw.exe "C:\path\to\repo\scripts\
    ddns-update.py"` — see section 9's rclone step for why `pythonw.exe`, not `python.exe`
-   or a raw `.exe`, is the action to use).
+   or a raw `.exe`, is the action to use). **If a system-wide VPN client is connected on
+   this machine**, every "what's my IP" check answers with the VPN's exit IP, and this
+   script would faithfully point every public hostname at it (this happened; every public
+   route returned Cloudflare `522` until the VPN was disconnected). The script now checks
+   the IPv4 default routes first and skips the run — records keep their last good value —
+   whenever a VPN-looking route is present, pushing one "DDNS paused" ntfy notification per
+   VPN session and a "DDNS resumed" one once it's gone. Disconnecting the VPN is still the
+   fix; the guard just stops the damage.
 9. **Point Jellyfin's own Known Proxies / Published Server URLs at Caddy** — Dashboard →
    Networking, native Jellyfin install. Without **Known proxies** set to the address
    Caddy's requests actually arrive from, every remote session shows Caddy's IP instead of
@@ -426,8 +435,9 @@ Setup:
 the Caddyfile each apply it per-visitor: a generous general ceiling (300 req/min) that
 shouldn't affect real browsing/streaming, plus a tighter zone (10 req/min) scoped to each
 app's own login endpoint specifically (Jellyfin's `/Users/AuthenticateByName`; Seerr's
-`/api/v1/auth/*`, covering its Jellyfin-backed, local, and Plex login routes), to blunt
-credential-stuffing. Both zones on both blocks are keyed on `{client_ip}`, not
+`/api/v1/auth/*`, covering its Jellyfin-backed, local, and Plex login routes; RomM's
+`/api/login`, `/api/token` and password-reset paths on `https://games.{$DOMAIN}`), to
+blunt credential-stuffing. Both zones on both blocks are keyed on `{client_ip}`, not
 `{remote_host}` — with Cloudflare proxying in front, every request's TCP peer is a
 Cloudflare edge IP, so keying on the raw peer would rate-limit everyone as if they were
 one visitor.
@@ -1002,6 +1012,112 @@ development, including two real bugs it caught and fixed: a fully-imported movie
 showing a false "import blocked" (Sonarr's queue can keep a stale entry for a downloadId
 that already completed) and a stage-track showing "unknown" instead of "done" for
 completed grabs whose torrent had already been cleaned up from the client.
+
+---
+
+## Satisfactory: an unrelated add-on game server
+
+Not part of the movie/TV pipeline at all — a `compose.yaml` service
+(`wolveix/satisfactory-server`) added the same way as everything else here, but with a
+genuinely different exposure story worth understanding before assuming it works like
+Jellyfin/Seerr do:
+
+**Caddy is not involved, at all.** This stack's Caddy build
+(`Dockerfile.caddy`) only has the `caddy-dns/cloudflare` and `mholt/caddy-ratelimit`
+plugins, and its `servers` block is pinned to `protocols h1 h2` — HTTP/HTTPS only.
+Satisfactory speaks raw UDP/TCP game traffic on port `7777` (both) plus TCP `8888` for
+its messaging/management API, which physically cannot pass through an HTTP-only
+reverse proxy. So instead of a Caddy site block and a Cloudflare-proxied DNS record,
+this needs:
+
+1. **A router port-forward** — TCP `7777`, UDP `7777`, and TCP `8888`, all pointed at
+   this machine's LAN IP. On a double-NAT setup (an ISP modem/router in front of a
+   second router), both hops need the forward, not just one.
+2. **Connect by raw WAN IP**, not a hostname — `curl -s https://api.ipify.org` gets the
+   current one. No DNS record, no `DDNS_RECORDS` entry; deliberately kept simple.
+
+**The real tradeoff to know**: unlike `watch`/`stats`/the apex hostname, a directly
+port-forwarded service has none of Cloudflare's WAF, rate limiting, or origin-IP-hiding
+in front of it — the game server is exactly as exposed as the port-forward makes it,
+nothing more.
+
+`${CONFIG_ROOT}/satisfactory` holds game files, saves, and backups (8GB+ on first run —
+the container downloads the dedicated server itself on startup unless `SKIPUPDATE=true`
+is set). `SATISFACTORY_MAXPLAYERS` in `.env` overrides the default player cap (`4`) if
+set.
+
+See the global `self-host-service` skill (`~/.claude/skills/`, not scoped to this repo)
+for the general version of the decision this section is a worked example of — HTTP
+service behind a reverse proxy vs. a raw port-forwarded one — for whatever gets added
+to this stack next.
+
+---
+
+## RomM: a retro game library (`games.{$DOMAIN}`)
+
+Also outside the movie/TV pipeline, but the *opposite* exposure story from Satisfactory:
+[RomM](https://romm.app) is a plain HTTP web app, so it takes the normal Caddy +
+Cloudflare path — `http://games.{$DOMAIN}` on the LAN (`lanonly`), `https://games.{$DOMAIN}`
+publicly with the same rate-limit shape as `watch`/`stats`/apex (login zone on RomM's
+`/api/login`, `/api/token` and password-reset paths). It's the fourth public hostname:
+its own proxied Cloudflare `A` record, a slot in `DDNS_RECORDS`, and a Pi-hole Local DNS
+record for the LAN name (section 5). RomM has its own accounts (admin/editor/viewer roles,
+invite links), so sharing with someone means creating them a RomM user — Jellyfin isn't
+involved. First visit shows RomM's own setup wizard (create the admin account) — do that
+before handing out the link, or the first visitor gets to.
+
+**Two containers** (`compose.yaml`): `romm` (`rommapp/romm:5`, major-pinned — it runs its
+own DB migrations on start, so minor bumps are safe to take implicitly, a major bump should
+be deliberate) and `romm-db` (`mariadb:11`). Redis is bundled inside the RomM image. The
+database lives in the `romm_db` named volume, **not** under `${CONFIG_ROOT}` like every
+other app here, on purpose: InnoDB on a Windows bind mount through Docker Desktop is a
+known corruption/perf trap and RomM's own docs say to use a volume. Config, saves/states
+(`assets/`) and scraped artwork (`resources/`) are normal `${CONFIG_ROOT}/romm/...` bind
+mounts. Backup = `assets/` + `config/` + a DB dump:
+
+```bash
+docker exec romm-db mariadb-dump --user=romm --password="$ROMM_DB_PASSWORD" \
+  --single-transaction --databases romm > romm-db-$(date +%F).sql
+```
+
+**Library layout** (`ROMS_ROOT` in `.env`, mounted as `/romm/library`):
+
+```
+<ROMS_ROOT>/roms/<platform-slug>/   game files, or one folder per multi-file game
+<ROMS_ROOT>/bios/<platform-slug>/   firmware, using the exact filenames the core expects
+```
+
+Slugs are RomM's own (`snes`, `gba`, `psx`, `genesis`, … — full list at
+https://docs.romm.app/latest/platforms/supported-platforms/). Folder names match
+case-insensitively, and a folder named some other way gets mapped in
+`${CONFIG_ROOT}/romm/config/config.yml` under `system.platforms` — the reference
+deployment's `bios/` folders came from a libretro-style pack (`Nintendo - Game Boy
+Advance` etc.) and are all mapped there. A folder with no mapping and no slug match is
+just skipped by the scan. RomM checks for the lowercase `roms` folder literally; the
+reference `ROMS_ROOT` actually has `Roms/` on disk and works anyway because Docker
+Desktop's Windows bind mounts resolve paths case-insensitively (verified with a
+throwaway container, not assumed — don't "fix" the casing).
+
+**Adding games**: drop files into `roms/<slug>/`, then Library → Scan in the UI, or wait
+for the nightly rescan (`SCHEDULED_RESCAN_CRON`, 4am). RomM's filesystem watcher is
+deliberately **off** — it relies on inotify, which doesn't reliably cross the
+NTFS-into-Linux bind-mount boundary, the same reason Jellyfin's realtime monitor is only
+a backup here (CLAUDE.md). Hasheous (hash-based matching, no account) is always on;
+IGDB/SteamGridDB/RetroAchievements/ScreenScraper are optional keys in `.env`, blank = off.
+
+**Gotchas worth knowing before they bite:**
+
+- Cloudflare's free-tier proxy caps request bodies at 100 MB, so uploading big ROMs
+  through the *public* hostname's Upload button fails at the edge, not in RomM — use the
+  LAN hostname or just the folder. Downloads and in-browser play aren't capped.
+- In-browser play (EmulatorJS) needs HTTPS for PSP specifically (`SharedArrayBuffer`);
+  everything else works over the plain-HTTP LAN name too. Heavy cores (Saturn, Dreamcast,
+  PSP) are CPU-bound on the *player's* device, not this server.
+- `ROMM_SESSION_SECURE_COOKIE` stays at its default (off) — turning it on breaks login on
+  the plain-HTTP LAN name. `ROMM_BASE_URL` is the public URL so invite links and QR codes
+  point at the right place.
+- Host port is `8085`, not RomM's default `8080` — local-mode qBittorrent owns 8080.
+- `romm-db` is never published to the host; `romm` reaches it container-to-container.
 
 ---
 

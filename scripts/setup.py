@@ -10,6 +10,7 @@ and let you actually run them yourself.
 
 import base64
 import re
+import secrets
 import socket
 import sys
 from pathlib import Path
@@ -170,6 +171,16 @@ def main():
             values["WIREGUARD_PRIVATE_KEY"] = ask("WireGuard private key")
             values["WIREGUARD_ADDRESSES"] = ask("WireGuard address (e.g. 10.2.0.2/32)")
             values["VPN_SERVER_COUNTRIES"] = ask("Server country filter (blank = any)", default="")
+
+    print()
+    print("--- RomM (retro game library) ---")
+    values["ROMS_ROOT"] = ask("Where your ROMs live (roms/<platform>/ and bios/<platform>/ under it,\n"
+                              "  see .env.example's ROMS_ROOT comment)", default="D:/roms")
+    # The DB passwords only ever travel container-to-container and the auth key
+    # just has to be unguessable -- nothing here is worth typing by hand.
+    values["ROMM_DB_PASSWORD"] = secrets.token_hex(16)
+    values["ROMM_DB_ROOT_PASSWORD"] = secrets.token_hex(16)
+    values["ROMM_AUTH_SECRET_KEY"] = secrets.token_hex(32)
 
     write_env(values)
     print()

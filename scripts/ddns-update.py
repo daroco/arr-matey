@@ -1,7 +1,7 @@
 """
 Keeps the public DNS records for this stack's internet-facing hostnames (on
-Cloudflare -- currently watch.<domain>, <domain>, and jellyseerr.<domain>)
-pointed at this machine's current WAN IP. Run via pythonw.exe as a scheduled
+Cloudflare -- whatever DDNS_RECORDS in .env lists: watch/apex/stats/games.<domain>
+as of this writing) pointed at this machine's current WAN IP. Run via pythonw.exe as a scheduled
 task action, same pattern as scripts/rclone-sync.py -- pythonw has no console,
 so nothing flashes on each run, and every outcome (including failures) goes to
 a log file since an uncaught exception would otherwise vanish silently.
@@ -20,10 +20,24 @@ writing means a no-op run (the common case, IP unchanged) makes one read-only
 API call per record instead of an unconditional write every few minutes. One
 record's lookup/update failure doesn't stop the others from being checked --
 main() collects failures and reports them all at the end.
+
+VPN guard: a system-wide VPN client on this host (ProtonVPN, seen live on
+2026-09-16) adds its own default route, so every "what's my IP" echo service
+answers with the VPN's exit IP -- and this script would then faithfully point
+every public hostname at a server in another city that isn't forwarding 443 to
+this house. That happened: all four records were rewritten to Proton's IP
+within one 5-minute cycle and every public route returned Cloudflare 522 until
+the VPN was disconnected. So before trusting the echoed IP, main() looks at the
+IPv4 default routes: more than one, or any on an interface whose name looks
+like a VPN adapter, means the answer can't be trusted and the run is skipped
+(logged, one ntfy push per VPN session via a marker file, never an error --
+the records keep their last good value, which is exactly what we want).
 """
 
 import logging
 import logging.handlers
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -41,10 +55,49 @@ NTFY_SERVER = _env.get("NTFY_SERVER", "https://ntfy.sh")
 NTFY_TOPIC = _env.get("NTFY_TOPIC", "")
 
 LOG_PATH = f"{CONFIG_ROOT}\\ddns-update.log"
+# Exists while runs are being skipped because a VPN owns the default route --
+# so the "paused"/"resumed" ntfy pushes fire once per VPN session, not every
+# 5 minutes for as long as the VPN stays up.
+VPN_PAUSE_FLAG = Path(CONFIG_ROOT) / "ddns-vpn-paused.flag"
+# Interface names that mean "this default route is a tunnel, not the WAN".
+VPN_ALIAS_PATTERN = re.compile(r"vpn|wireguard|openvpn|tailscale|mullvad|nord|tap-|tun", re.IGNORECASE)
+PHYSICAL_ALIAS_PATTERN = re.compile(r"^(Ethernet|Wi-Fi|WiFi|Local Area Connection)", re.IGNORECASE)
 CF_API = "https://api.cloudflare.com/client/v4"
 IP_ECHO_SERVICES = ["https://api.ipify.org?format=json", "https://ifconfig.me/all.json"]
 
 log = logging.getLogger("ddns-update")
+
+
+def vpn_default_routes():
+    """Names of IPv4 default-route interfaces that make the echoed WAN IP untrustworthy.
+
+    Empty list = safe to proceed. Windows-only by construction (Get-NetRoute); on
+    anything else, or if the query itself fails, it returns [] with a warning so
+    the guard degrades to the old unguarded behaviour rather than blocking DDNS.
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        out = subprocess.run(
+            [
+                "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                "Get-NetRoute -DestinationPrefix 0.0.0.0/0 -AddressFamily IPv4 "
+                "| Select-Object -ExpandProperty InterfaceAlias",
+            ],
+            capture_output=True, text=True, timeout=30, check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        log.warning(f"could not inspect default routes, proceeding unguarded: {e}")
+        return []
+    aliases = [line.strip() for line in out.splitlines() if line.strip()]
+    suspicious = [a for a in aliases if VPN_ALIAS_PATTERN.search(a)]
+    if not suspicious and len(aliases) > 1:
+        # A single-WAN box normally has exactly one default route. Two is fine only
+        # when both are ordinary physical adapters to the same router (wired +
+        # Wi-Fi on a laptop); anything else in there is a tunnel with an
+        # unrecognised name.
+        suspicious = [a for a in aliases if not PHYSICAL_ALIAS_PATTERN.match(a)]
+    return suspicious
 
 
 def notify_ntfy(title, message):
@@ -121,6 +174,20 @@ def update_record(zone_id, record_id, new_ip):
 
 
 def main():
+    suspicious = vpn_default_routes()
+    if suspicious:
+        log.warning(f"skipping: a VPN owns the default route ({', '.join(suspicious)}); "
+                    "the echoed WAN IP would be the VPN's exit, not this house")
+        if not VPN_PAUSE_FLAG.exists():
+            VPN_PAUSE_FLAG.touch()
+            notify_ntfy("DDNS paused", f"VPN default route detected ({', '.join(suspicious)}); "
+                        "records left as-is until it's disconnected")
+        return
+    if VPN_PAUSE_FLAG.exists():
+        VPN_PAUSE_FLAG.unlink()
+        log.info("VPN gone, resuming DDNS updates")
+        notify_ntfy("DDNS resumed", "VPN default route gone, checking records again")
+
     new_ip = current_wan_ip()
     zone_id = get_zone_id()
 

@@ -18,6 +18,12 @@ this stack; real users/library/watch-history carried over via a one-time data mi
 `/config/data/` layout, which nests `data`/`metadata`/`plugins`/`root` one level deeper
 than the native Windows layout did — a real gotcha if this ever needs redoing).
 
+`compose.yaml` also has services outside that pipeline entirely: **`satisfactory`**
+(`wolveix/satisfactory-server`), a game server added the same way as everything else
+here but exposed a completely different way — see "Non-HTTP services" below — and
+**`romm`** + **`romm-db`** (RomM, a retro game library at `games.<domain>`), an HTTP app
+on the normal Caddy route with a few deliberate deviations from house style, see below.
+
 Mostly infrastructure config (`compose.yaml`, `Caddyfile`, `.env`) plus standalone Python
 automation scripts in `scripts/`, plus one real application: `dashboard/`, a FastAPI app
 that traces a Seerr request across the whole pipeline (see its own section below).
@@ -113,8 +119,9 @@ The `Caddyfile` has three distinct route classes:
    separate compose project, not managed here) pointing at the host's LAN IP. Guarded by
    a `lanonly` snippet (`not remote_ip private_ranges` → 403) as defense-in-depth, though
    the real control is that port 80 is never forwarded at the router.
-2. **Public HTTPS** — exactly three hostnames (`watch.<domain>` → the `jellyfin` service,
-   `<domain>` apex → Seerr, `stats.<domain>` → the trace dashboard; `jellyseerr.<domain>`
+2. **Public HTTPS** — exactly four hostnames (`watch.<domain>` → the `jellyfin` service,
+   `<domain>` apex → Seerr, `stats.<domain>` → the trace dashboard, `games.<domain>` →
+   RomM; `jellyseerr.<domain>`
    used to also route to Seerr as a pre-rename leftover, retired as redundant), each
    with a real Let's Encrypt cert
    via the **DNS-01** challenge (`acme_dns cloudflare`, needs `CF_API_TOKEN`) specifically
@@ -132,6 +139,36 @@ The `Caddyfile` has three distinct route classes:
    so Sonarr/Radarr can talk to the seedbox's clients without any per-client-type field
    for a Basic Auth layer distinct from the client's own login. Proxies by host, not
    path, so one shim serves both qBittorrent and Transmission.
+
+**Non-HTTP services (e.g. `satisfactory`) skip Caddy entirely.** This build of Caddy
+(`Dockerfile.caddy`) only has the `caddy-dns/cloudflare` and `mholt/caddy-ratelimit`
+xcaddy plugins — no L4/TCP-proxy module — and its `servers` block is pinned to
+`protocols h1 h2` (HTTP only), so raw TCP/UDP traffic (a game server, anything that
+isn't speaking HTTP) physically cannot route through it. The pattern for these is
+publish the port(s) directly in `compose.yaml` and forward them at the router, same as
+the four public HTTPS hostnames' 443 forward but for whatever ports the service
+actually needs — no Cloudflare DNS record, no Caddyfile change, no rate limiting or
+IP-hiding (a real tradeoff worth knowing: unlike the HTTPS routes, a directly
+port-forwarded service has none of Cloudflare's WAF/origin-hiding). See the global
+`self-host-service` skill (`~/.claude/skills/`, not repo-scoped) for the general
+version of this decision — HTTP-via-reverse-proxy vs. direct-port-forward — for
+whatever gets added next.
+
+**`romm` + `romm-db` (RomM, retro game library) is the other non-pipeline service**, and
+the worked example of the *other* branch of that decision: it's a plain HTTP web app, so
+it takes the normal Caddy + Cloudflare route (`games.<domain>`, README's RomM section).
+Things that deliberately differ from every other service here: the MariaDB data is a named
+volume (`romm_db`), not a `${CONFIG_ROOT}` bind mount (InnoDB on a Windows bind mount is a
+corruption trap — backup is a `mariadb-dump`, not a folder copy); the image is major-pinned
+(`rommapp/romm:5`, it auto-migrates its DB on start); RomM's filesystem watcher is off in
+favour of a nightly scheduled rescan (same NTFS/inotify boundary as Jellyfin's realtime
+monitor, below); host port is 8085 because 8080 is local-mode qbittorrent's. The library is
+`${ROMS_ROOT}` (`D:/Roms`, separate from `MEDIA_ROOT`), laid out `roms/<slug>/` +
+`bios/<slug>/`; non-slug folder names (the libretro-style `bios/` folders) are mapped in
+`${CONFIG_ROOT}/romm/config/config.yml`. Docker Desktop resolves the bind-mounted Windows
+path case-insensitively (verified with a throwaway container), so `Roms/` on disk satisfies
+RomM's literal lowercase `roms` check — don't "fix" the casing, and don't try to rename it
+while a download into it is running (access denied, seen live).
 
 `scripts/` — all standalone, stdlib-plus-`requirements.txt` (`requests`,
 `python-dotenv`, `PyYAML`), each reads `.env` directly rather than relying on shell
@@ -217,6 +254,11 @@ from scratch.
   access with no obvious error. Check `route print -4` for a second `0.0.0.0` default
   route with metric `0` if DDNS behavior looks wrong; the fix is disconnecting the VPN
   (its own app, not just killing the GUI process — the tunnel/service can survive that).
+  Happened for real on 2026-09-16 (ProtonVPN, all four records rewritten within one
+  5-minute cycle, every public route 522). `ddns-update.py` now refuses to run while a
+  VPN-looking default route exists (`vpn_default_routes()`, one ntfy push per VPN
+  session via a `ddns-vpn-paused.flag` marker in `${CONFIG_ROOT}`) — a "DDNS paused"
+  notification means exactly this, not a script failure. Still fix it by disconnecting.
 - **Cloudflare's own API can have real outages independent of DNS/edge health** — check
   `cloudflarestatus.com` before assuming a local config problem when only API calls
   (not the actual proxied sites) are failing with `521`s or timeouts.

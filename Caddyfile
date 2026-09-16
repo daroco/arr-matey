@@ -184,6 +184,46 @@ https://stats.{$DOMAIN} {
 	}
 }
 
+# LAN-only route for RomM (retro game library, the romm service) -- same shape
+# as the apex block above.
+http://games.{$DOMAIN} {
+	import lanonly
+	reverse_proxy romm:8080
+}
+
+# Public route: same posture as watch/apex/stats above -- real cert via DNS-01,
+# SNI-routed off the existing 443 forward, so no new port-forward. RomM's own
+# login (local accounts with admin/editor/viewer roles, invite links) gates every
+# request. The login zone covers every credential-taking path in RomM's auth
+# router (backend/endpoints/auth.py). EmulatorJS boot fans out into many asset
+# requests, so if a remote player ever trips games_general, raise that zone's
+# ceiling only -- never drop the `not remote_ip private_ranges` guard (see the
+# watch_general comment for the LAN false-lockout that guard prevents).
+https://games.{$DOMAIN} {
+	rate_limit {
+		zone games_general {
+			match {
+				not remote_ip private_ranges
+			}
+			key {client_ip}
+			events 300
+			window 1m
+		}
+		zone games_login {
+			match {
+				path /api/login /api/token /api/forgot-password /api/reset-password
+				not remote_ip private_ranges
+			}
+			key {client_ip}
+			events 10
+			window 1m
+		}
+	}
+	reverse_proxy romm:8080 {
+		header_up X-Real-IP {client_ip}
+	}
+}
+
 http://prowlarr.{$DOMAIN} {
 	import lanonly
 	reverse_proxy prowlarr:9696

@@ -206,6 +206,118 @@ services:
       - jellyfin
     restart: unless-stopped
 
+  # Not part of the request-to-playback pipeline -- a standalone game server
+  # added the same way as everything else here, just with a genuinely different
+  # exposure story: this is raw UDP/TCP game traffic, not HTTP, so Caddy is
+  # irrelevant (this stack's Dockerfile.caddy only builds in the cloudflare-dns
+  # and ratelimit plugins, no L4/TCP-proxy module -- see the satisfactory
+  # section of README/the self-host-service skill for the direct
+  # router-port-forward + grey-cloud-DNS path this needs instead). image is
+  # :latest deliberately (unlike jellyfin's pin) -- the community image tracks
+  # Satisfactory's own frequent updates and SKIPUPDATE=false already handles
+  # in-place game updates on container start, so pinning would just fight that.
+  satisfactory:
+    image: wolveix/satisfactory-server:latest
+    container_name: satisfactory
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - MAXPLAYERS=${SATISFACTORY_MAXPLAYERS:-4}
+      - SKIPUPDATE=false
+      - STEAMBETA=false
+    volumes:
+      - ${CONFIG_ROOT}/satisfactory:/config
+    ports:
+      - "7777:7777/tcp"
+      - "7777:7777/udp"
+      - "8888:8888/tcp"
+    restart: unless-stopped
+
+  # Retro game library (RomM) -- also outside the movie/TV pipeline, but unlike
+  # satisfactory it's a plain HTTP web app, so it takes the normal Caddy +
+  # Cloudflare route (games.${DOMAIN}, see Caddyfile and README's RomM section).
+  # Pinned to the major only: RomM runs its own DB migrations on start, so
+  # minor/patch bumps are safe to take implicitly, a major bump should be a
+  # deliberate act (softer version of jellyfin's exact pin above). Redis is
+  # bundled inside the image -- no separate cache container needed.
+  romm:
+    image: rommapp/romm:5
+    container_name: romm
+    environment:
+      - TZ=${TZ:-UTC}
+      - DB_HOST=romm-db
+      - DB_NAME=romm
+      - DB_USER=romm
+      - DB_PASSWD=${ROMM_DB_PASSWORD}
+      - ROMM_AUTH_SECRET_KEY=${ROMM_AUTH_SECRET_KEY}
+      # The public URL, used for invite links and QR codes; the plain-http LAN
+      # hostname keeps working regardless (ROMM_SESSION_SECURE_COOKIE is left at
+      # its default of off for exactly that reason -- turning it on would break
+      # LAN login).
+      - ROMM_BASE_URL=https://games.${DOMAIN}
+      # Hash-based matching, no account needed. Everything else is an optional
+      # key in .env; blank = that provider is simply off.
+      - HASHEOUS_API_ENABLED=true
+      - IGDB_CLIENT_ID=${IGDB_CLIENT_ID}
+      - IGDB_CLIENT_SECRET=${IGDB_CLIENT_SECRET}
+      - STEAMGRIDDB_API_KEY=${STEAMGRIDDB_API_KEY}
+      - RETROACHIEVEMENTS_API_KEY=${RETROACHIEVEMENTS_API_KEY}
+      - SCREENSCRAPER_USER=${SCREENSCRAPER_USER}
+      - SCREENSCRAPER_PASSWORD=${SCREENSCRAPER_PASSWORD}
+      # Nightly rescan instead of RomM's filesystem watcher: inotify events
+      # don't reliably cross the Windows-NTFS-into-Linux bind-mount boundary
+      # (the same reason Jellyfin's realtime monitor is only a backup here, see
+      # CLAUDE.md). Drop files in, hit Scan in the UI, or wait for 4am.
+      - ENABLE_SCHEDULED_RESCAN=true
+      - SCHEDULED_RESCAN_CRON=0 4 * * *
+      - SCAN_WORKERS=4
+      - WEB_SERVER_CONCURRENCY=2
+    volumes:
+      # roms/<platform>/ and bios/<platform>/ live under this one root -- see
+      # .env.example's ROMS_ROOT comment for the layout RomM expects.
+      - ${ROMS_ROOT}:/romm/library
+      - ${CONFIG_ROOT}/romm/config:/romm/config
+      - ${CONFIG_ROOT}/romm/assets:/romm/assets
+      - ${CONFIG_ROOT}/romm/resources:/romm/resources
+      - romm_redis:/redis-data
+    ports:
+      # 8080 on the host belongs to local-mode qbittorrent (profile-gated but
+      # would collide the moment that profile is on), hence 8085.
+      - "8085:8080"
+    depends_on:
+      romm-db:
+        condition: service_healthy
+        restart: true
+    restart: unless-stopped
+
+  # Named volume rather than a ${CONFIG_ROOT} bind mount, on purpose: InnoDB on a
+  # Windows bind mount (9p/virtiofs through Docker Desktop) is a known
+  # corruption/perf trap and RomM's own docs say to use a volume for the DB.
+  # Backup is therefore `docker exec romm-db mariadb-dump ...` (README), not a
+  # folder copy. Never published to the host -- romm reaches it container-to-
+  # container only.
+  romm-db:
+    image: mariadb:11
+    container_name: romm-db
+    environment:
+      - TZ=${TZ:-UTC}
+      - MARIADB_ROOT_PASSWORD=${ROMM_DB_ROOT_PASSWORD}
+      - MARIADB_DATABASE=romm
+      - MARIADB_USER=romm
+      - MARIADB_PASSWORD=${ROMM_DB_PASSWORD}
+    volumes:
+      - romm_db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 30s
+      start_interval: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
 volumes:
   caddy_data:
   caddy_config:
+  romm_db:
+  romm_redis:
