@@ -1088,12 +1088,18 @@ docker exec romm-db mariadb-dump --user=romm --password="$ROMM_DB_PASSWORD" \
 ```
 
 Slugs are RomM's own (`snes`, `gba`, `psx`, `genesis`, … — full list at
-https://docs.romm.app/latest/platforms/supported-platforms/). Folder names match
-case-insensitively, and a folder named some other way gets mapped in
-`${CONFIG_ROOT}/romm/config/config.yml` under `system.platforms` — the reference
-deployment's `bios/` folders came from a libretro-style pack (`Nintendo - Game Boy
-Advance` etc.) and are all mapped there. A folder with no mapping and no slug match is
-just skipped by the scan. RomM checks for the lowercase `roms` folder literally; the
+https://docs.romm.app/latest/platforms/supported-platforms/). **The folder name has to
+be the slug exactly, lowercase** (`n64`, not `N64`) — or be mapped to one in
+`${CONFIG_ROOT}/romm/config/config.yml` under `system.platforms`. The match is
+case-sensitive, and getting it wrong fails quietly: RomM still shows the platform under
+its proper name, but creates it as a *custom* platform with no IGDB/Hasheous/RA ids, so
+every ROM in it comes back "not identified" in a fraction of a second because no
+provider is ever asked. Seen live with an `N64` folder (297 clean No-Intro dumps, zero
+matches); `SELECT slug, igdb_id FROM platforms` in `romm-db` shows it at a glance — a
+NULL `igdb_id` on a mainstream console is this. The reference deployment maps its
+uppercase `GB`/`GBC`/`NES`/`N64` folders and its libretro-style `bios/` folders
+(`Nintendo - Game Boy Advance` etc.) there. Name new folders as lowercase slugs and
+none of this comes up — which also matters on a case-sensitive filesystem (the NAS). RomM checks for the lowercase `roms` folder literally; the
 reference `ROMS_ROOT` actually has `Roms/` on disk and works anyway because Docker
 Desktop's Windows bind mounts resolve paths case-insensitively (verified with a
 throwaway container, not assumed — don't "fix" the casing).
