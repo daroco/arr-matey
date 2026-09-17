@@ -54,7 +54,7 @@ DDNS_RECORDS = [r.strip() for r in _env["DDNS_RECORDS"].split(",") if r.strip()]
 NTFY_SERVER = _env.get("NTFY_SERVER", "https://ntfy.sh")
 NTFY_TOPIC = _env.get("NTFY_TOPIC", "")
 
-LOG_PATH = f"{CONFIG_ROOT}\\ddns-update.log"
+LOG_PATH = Path(CONFIG_ROOT) / "ddns-update.log"
 # Exists while runs are being skipped because a VPN owns the default route --
 # so the "paused"/"resumed" ntfy pushes fire once per VPN session, not every
 # 5 minutes for as long as the VPN stays up.

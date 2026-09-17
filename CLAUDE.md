@@ -228,6 +228,40 @@ can have hundreds of gaps -- the "why" for a specific show is an on-demand,
 one-click action (`arr_diagnose_series_gap`/`arr_search_series`) from that page instead.
 Not a total-inventory view of the whole library, just what's missing.
 
+## Second deployment target: Synology NAS (`compose.nas.yml`)
+
+Everything above describes the Windows + Docker Desktop host. The stack is being moved
+to a Synology DS925+ (DSM 7.2, Btrfs, x86 Ryzen, **no iGPU** so still software
+transcoding, 4 GB RAM stock) — README's "Running on a Synology NAS" section is the
+runbook. **Check which host you're on before applying anything Windows-shaped from this
+file**: `uname` answers it. What changes there, all of it confined to the
+`compose.nas.yml` overlay (layered via `COMPOSE_FILE` in the NAS's `.env`) plus `.env`:
+- **Caddy is on a macvlan network with its own LAN IP** (`CADDY_LAN_IP`), because DSM's
+  nginx owns 80/443 on the NAS's address. Pi-hole records and the router's 443 forward
+  point at that IP, not the NAS. The macvlan network's explicit name (`acq-lan`) is
+  load-bearing: Docker < 28 gives a two-network container the default route of whichever
+  network name sorts first, and it must be the LAN one or public HTTPS dies while LAN
+  routes keep working. `docker exec caddy ip route` is the check. The Docker Desktop
+  "every LAN client is 172.18.0.1" gotcha below does **not** apply there — Caddy sees
+  real LAN addresses.
+- **`dashboard/` and every `scripts/*.py` run inside the `dashboard` container**
+  (`Dockerfile.dashboard`), not as host processes: no Task Scheduler, no `pythonw`, no
+  host Python at all. Scheduled jobs are DSM Task Scheduler entries doing
+  `docker exec dashboard python scripts/<name>.py`; restart after a code change is
+  `docker compose restart dashboard` (repo is bind-mounted, no rebuild), so the
+  `dashboard-restart` skill's Stop/Start-ScheduledTask dance is Windows-only.
+  `${CONFIG_ROOT}`/`${MEDIA_ROOT}` are mounted into it at their *own host paths* so the
+  host-path logic in `dashboard/config.py` and the scripts holds unmodified; the
+  `*_BASE_URL` / `JELLYFIN_BASE_URL` / `DASHBOARD_UPSTREAM` overrides swap `localhost`
+  and `host.docker.internal` for service names.
+- **The filesystem is case-sensitive and inotify works.** RomM's library folder must be
+  literally lowercase `roms/` (the "don't fix the casing" note above is a Docker Desktop
+  fact, not a NAS one), and Jellyfin's realtime monitor / RomM's watcher are reliable
+  there, unlike the NTFS bind-mount situation described below.
+- `docker` needs `sudo` on DSM, and `MSYS_NO_PATHCONV=1` is meaningless (no Git Bash).
+- Seerr's container ignores `PUID` and runs as UID 1000: its config folder needs
+  `chown 1000:1000`, everything else `PUID:PGID` (1026:100 on DSM, not 1000:1000).
+
 ## Repo-specific skills
 
 `.claude/skills/` has six skills for the recurring tasks this repo's own history keeps

@@ -1,0 +1,33 @@
+# Runtime for dashboard/ and scripts/ on a Linux host -- used only by compose.nas.yml.
+# Holds dependencies only; the code itself is bind-mounted from the repo at /app (see
+# that file for why), so editing Python never needs a rebuild.
+
+# rclone from its own official image rather than Debian's package, which lags years
+# behind -- a static Go binary, so copying just the one file is the whole install.
+FROM rclone/rclone:latest AS rclone
+
+# 3.9 to match what this repo is written against (CLAUDE.md) -- newer would run it
+# fine, but then "works in the container" stops implying "works on the Windows box".
+FROM python:3.9-slim-bookworm
+
+# p7zip-rar is the actual point of the 7-Zip install: dashboard/actions/
+# extract_actions.py exists to unpack multi-part RAR scene releases, and Debian's
+# p7zip-full alone ships without the RAR codec (licensing -- it lives in non-free).
+RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends p7zip-full p7zip-rar ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=rclone /usr/local/bin/rclone /usr/local/bin/rclone
+
+COPY scripts/requirements.txt /tmp/scripts-requirements.txt
+COPY dashboard/requirements.txt /tmp/dashboard-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/scripts-requirements.txt -r /tmp/dashboard-requirements.txt
+
+# The repo is a bind mount owned by whoever cloned it; don't litter it with
+# __pycache__ written as the container's user. Unbuffered so `docker logs` is live.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+CMD ["python", "-m", "dashboard.run"]

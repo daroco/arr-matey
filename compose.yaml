@@ -181,15 +181,21 @@ services:
       context: .
       dockerfile: Dockerfile.caddy
     container_name: caddy
+    # Host ports are overridable only for hosts where 80/443 already belong to
+    # something else -- a Synology NAS is the real case (DSM's own nginx holds both,
+    # see compose.nas.yml). Leave both unset everywhere else.
     ports:
-      - "80:80"
-      - "443:443"
+      - "${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_PORT:-443}:443"
     environment:
       - DOMAIN=${DOMAIN}
       - SEEDBOX_HOST=${SEEDBOX_HOST}
       - SEEDBOX_BASIC_AUTH=${SEEDBOX_BASIC_AUTH}
       - ACME_EMAIL=${ACME_EMAIL}
       - CF_API_TOKEN=${CF_API_TOKEN}
+      # Where stats.${DOMAIN} proxies to: the host process by default, the
+      # `dashboard` container when compose.nas.yml is layered on.
+      - DASHBOARD_UPSTREAM=${DASHBOARD_UPSTREAM:-host.docker.internal:8099}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
@@ -216,9 +222,15 @@ services:
   # :latest deliberately (unlike jellyfin's pin) -- the community image tracks
   # Satisfactory's own frequent updates and SKIPUPDATE=false already handles
   # in-place game updates on container start, so pinning would just fight that.
+  #
+  # Profile-gated (add "satisfactory" to COMPOSE_PROFILES, comma-separated alongside
+  # "local" if that's on too) so a host that shouldn't run it -- the NAS, which has
+  # neither the RAM nor any reason to -- just doesn't start it.
   satisfactory:
     image: wolveix/satisfactory-server:latest
     container_name: satisfactory
+    profiles:
+      - satisfactory
     environment:
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}

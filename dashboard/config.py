@@ -85,7 +85,13 @@ class Config:
             # reach the *published* port via localhost, not a container-DNS name.
             jf_ip = "localhost"
         scheme = "https" if jf.get("useSsl") else "http"
-        self.jellyfin_base = f"{scheme}://{jf_ip}:{jf.get('port', 8096)}{jf.get('urlBase', '')}"
+        # JELLYFIN_BASE_URL is the same kind of override as the *_BASE_URL vars below,
+        # for the one case the localhost translation above is wrong: this dashboard
+        # running as a container itself (compose.nas.yml), where the service name is
+        # the right address and localhost is the dashboard's own container.
+        self.jellyfin_base = env.get("JELLYFIN_BASE_URL") or (
+            f"{scheme}://{jf_ip}:{jf.get('port', 8096)}{jf.get('urlBase', '')}"
+        )
 
         self.sonarr_base = env.get("SONARR_BASE_URL") or "http://localhost:8989"
         self.radarr_base = env.get("RADARR_BASE_URL") or "http://localhost:7878"

@@ -1,0 +1,83 @@
+# Overlay for running this stack on a Synology NAS (DSM 7.2+, Container Manager) --
+# or any native-Linux Docker host where the two things below apply. Layer it on top:
+#
+#   docker compose -f compose.yaml -f compose.nas.yml up -d
+#
+# or set COMPOSE_FILE=compose.yaml:compose.nas.yml in .env once, so plain
+# `docker compose ...` picks both up every time (what README's NAS section does).
+#
+# It changes exactly two things about the base stack:
+#
+# 1. Caddy gets its own LAN IP (macvlan) instead of the host's ports 80/443. DSM's
+#    own nginx owns both of those on the NAS's address and takes them back on every
+#    DSM update if you pry them loose, so rather than fight it Caddy shows up on the
+#    LAN as its own device at ${CADDY_LAN_IP}: Pi-hole's local DNS records and the
+#    router's 443 forward point THERE, not at the NAS. The base file's host-port
+#    publish still happens (there's no clean cross-version way to drop it), which is
+#    why .env moves it out of DSM's way with CADDY_HTTP_PORT/CADDY_HTTPS_PORT --
+#    harmless, and a working fallback (router 443 -> NAS:8443) if macvlan ever
+#    misbehaves.
+#
+# 2. The trace dashboard and the scheduled scripts run in a container instead of as a
+#    host process. The only reason they were ever a host process was Windows (Task
+#    Scheduler + pythonw, scripts that needed a real Windows host); on Linux a
+#    container with rclone/7z baked in is the simpler thing, and it means the NAS
+#    needs no Python of its own -- DSM's bundled one is old, pip-less, and gets
+#    replaced on updates. Scheduled runs become DSM Task Scheduler entries that
+#    `docker exec dashboard python scripts/<name>.py` (README's NAS section).
+
+services:
+
+  caddy:
+    networks:
+      default: {}
+      lan:
+        ipv4_address: ${CADDY_LAN_IP}
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: dashboard
+    # Same identity every linuxserver container here runs as, so files rclone pulls
+    # into staging are owned by the user Sonarr/Radarr import them as.
+    user: "${PUID}:${PGID}"
+    working_dir: /app
+    command: ["python", "-m", "dashboard.run"]
+    environment:
+      - TZ=${TZ:-UTC}
+      - HOME=/tmp
+      - RCLONE_CONFIG=${CONFIG_ROOT}/rclone/rclone.conf
+    volumes:
+      # The repo itself, not a copy baked into the image: .env is read from the repo
+      # root by every script, and a code change needs only
+      # `docker compose restart dashboard`, no rebuild.
+      - .:/app
+      # Mounted at the SAME path inside as outside, on purpose. dashboard/ and
+      # scripts/ build real filesystem paths straight from .env's CONFIG_ROOT and
+      # MEDIA_ROOT (they were written as host processes); identical paths on both
+      # sides means those values are simply true in here too, no translation layer.
+      - ${CONFIG_ROOT}:${CONFIG_ROOT}
+      - ${MEDIA_ROOT}:${MEDIA_ROOT}
+    restart: unless-stopped
+
+networks:
+  lan:
+    # The explicit name is load-bearing, not cosmetic. A container on two networks
+    # gets ONE default route, and Docker Engine before v28 (DSM ships 24.x, no
+    # gw_priority yet) picks the network whose name sorts first. Caddy's default
+    # route has to be the LAN one -- replies to router-forwarded internet traffic
+    # would otherwise leave via the bridge, get NATed to the NAS's address, and the
+    # connection dies -- and "acq-lan" sorts ahead of "acquisitions_default".
+    # Verify after any change: `docker exec caddy ip route` must say
+    # "default via <your router>".
+    name: acq-lan
+    driver: macvlan
+    driver_opts:
+      # eth0 on a stock DSM install; ovs_eth0 if Virtual Machine Manager has turned
+      # on Open vSwitch. `ip -br addr` on the NAS shows which one holds the LAN IP.
+      parent: ${LAN_PARENT_IFACE:-eth0}
+    ipam:
+      config:
+        - subnet: ${LAN_SUBNET}
+          gateway: ${LAN_GATEWAY}

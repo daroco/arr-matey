@@ -1205,6 +1205,114 @@ up their scheduled tasks in this mode.
 
 ---
 
+## Running on a Synology NAS (`compose.nas.yml`)
+
+Everything above assumes Windows + Docker Desktop. The same stack runs on a Synology NAS
+(DSM 7.2+, an x86 model — built against a DS925+) with one overlay file and a handful of
+`.env` values. Every app only ever sees container paths (`/media`, `/config`), so a
+migrated `${CONFIG_ROOT}` needs **no** path changes inside Sonarr/Radarr/Jellyfin/Bazarr
+— the work is all on the host side.
+
+### What's different from the Windows setup, and why
+
+| | Windows | NAS |
+|---|---|---|
+| Caddy's front door | host ports 80/443 | its own LAN IP via macvlan — DSM's nginx owns 80/443 on the NAS's address and reclaims them on every DSM update |
+| Dashboard + scripts | host process, Task Scheduler + `pythonw.exe` | the `dashboard` container (`Dockerfile.dashboard`: Python 3.9, rclone, 7-Zip with the RAR codec); DSM needs no Python of its own |
+| Scheduled jobs | Windows Task Scheduler | DSM Task Scheduler running `docker exec dashboard python scripts/<name>.py` |
+| Python → apps | `http://localhost:<port>` | service names (`http://sonarr:8989`, …) via the `*_BASE_URL` overrides, since all Python now runs inside a container |
+| Satisfactory | add `satisfactory` to `COMPOSE_PROFILES` | leave it off |
+| Filesystem | NTFS through Docker Desktop: case-insensitive, no reliable inotify | Btrfs: **case-sensitive** (RomM's library folder must be literally `roms/`, lowercase) and inotify works, so Jellyfin's realtime monitor is finally trustworthy here |
+
+### One-time DSM prep
+
+1. **Container Manager** from Package Center (provides `docker` + `docker compose`), and
+   **Git Server** if you want a `git` binary.
+2. **Shared folders** (Control Panel → Shared Folder — File Station can't create these):
+   `media` and `roms`, recycle bin **off** (otherwise every file Sonarr/Radarr replace
+   on upgrade lingers in `#recycle`). `docker` already exists. `movies/`, `tv/`,
+   `downloads/` are plain subfolders of `media` — a shared folder is its own Btrfs
+   subvolume and hardlinks can't cross one, the same one-mount rule as everywhere else
+   in this README.
+3. **SSH**: Control Panel → Terminal & SNMP. Docker needs root on DSM: `sudo docker …`.
+4. `id <your user>` → that's `PUID`/`PGID` (typically `1026`/`100`).
+5. Set the NAS's time zone (Regional Options) — DSM's Task Scheduler runs the jobs
+   below on the system clock, not on `.env`'s `TZ`.
+
+### Bring-up
+
+```bash
+cd /volume1/docker && git clone <this repo> acquisitions && cd acquisitions
+# .env isn't in git: copy the old machine's across, then change the host-side values
+# and uncomment the NAS block -- .env.example documents every one of them
+sudo docker compose config --quiet && echo ok      # overlay + .env parse cleanly
+sudo docker compose up -d --build
+sudo docker exec caddy ip route                    # MUST say: default via <your router>
+```
+
+Keep the folder named `acquisitions` — it's the Compose project name, which prefixes the
+named volumes (`acquisitions_caddy_data`, `acquisitions_romm_db`).
+
+That `ip route` check is the one thing worth not skipping: a container on two networks
+gets a single default route, and if Caddy's isn't the LAN one, LAN hostnames work and
+public HTTPS silently doesn't (`compose.nas.yml`'s `networks:` comment has the why).
+
+Then, in order: point Pi-hole's local DNS records for every `*.<domain>` hostname at
+`CADDY_LAN_IP`; move the router's 443 forward to `CADDY_LAN_IP` as well; run
+`sudo docker exec dashboard python scripts/provision.py` (should report everything as
+already existing — it's a wiring check at this point, not a setup step).
+
+Seerr's container runs as UID 1000 no matter what `PUID` says, so after copying config
+across: `sudo chown -R 1000:1000 ${CONFIG_ROOT}/jellyseerr`. Everything else wants
+`PUID:PGID`.
+
+### Migrating the data
+
+Stop the old stack first (`docker compose down`) — the app configs are live SQLite.
+
+- **`${CONFIG_ROOT}`**: copy the folder as-is, then `chown -R` it to `PUID:PGID` (and
+  the Seerr exception above).
+- **Media**: if it lives on an NTFS drive, that drive can sit in a spare bay **without
+  being initialized** (DSM lists it as unallocated — creating a storage pool on it is
+  what erases it) and be mounted read-only by hand:
+  `sudo mount -t ntfs -o ro /dev/sataNpM /mnt/ntfs`. Copy with
+  `rsync -rtH` — the `-H` matters: the library's hardlinks between `downloads/` and
+  `movies/`/`tv/` survive the trip (check first that the driver exposes them:
+  `find … -links +1` should find files), where any non-hardlink-aware copy would
+  store every still-seeding file twice, and an empty `downloads/` would make the next
+  rclone run re-pull all of them from the seedbox.
+- **`romm_db`** (a named volume, not a folder): `mariadb-dump` on the old host, restore
+  on the new one — see the RomM section above. `romm_redis` is disposable.
+- **`caddy_data`**: either tar the volume across or let Caddy re-issue; one re-issue is
+  nowhere near Let's Encrypt's duplicate-certificate limit.
+- **rclone**: put `rclone.conf` at `${CONFIG_ROOT}/rclone/rclone.conf` (on Windows it's
+  `%APPDATA%\rclone\rclone.conf`). If the SFTP remote uses `key_file`, put the key under
+  `${CONFIG_ROOT}/rclone/` too and fix the path inside the conf — it has to be a path
+  that exists *inside the dashboard container*, which `${CONFIG_ROOT}` does.
+
+### Scheduled jobs
+
+Control Panel → Task Scheduler → Create → Scheduled Task → User-defined script, user
+`root`, one each, same cadences as section 9's Windows tasks:
+
+```bash
+docker exec dashboard python scripts/rclone-sync.py
+docker exec dashboard python scripts/seedbox-cleanup.py
+docker exec dashboard python scripts/ddns-update.py
+```
+
+Each script still logs to `${CONFIG_ROOT}` exactly as before, so the dashboard's
+rclone/cleanup stage detectors keep working unchanged. `ddns-update.py`'s VPN guard is
+Windows-only by construction and simply doesn't run here; a NAS with no VPN client on it
+doesn't have the problem the guard exists for.
+
+After a dashboard code change: `sudo docker compose restart dashboard` (the repo is
+bind-mounted into the container, so no rebuild). After a Caddyfile change: the same
+validate-then-`caddy reload` flow as everywhere else, minus the `MSYS_NO_PATHCONV=1`
+prefix, which is a Git-Bash-on-Windows workaround.
+
+---
+
 ## Updating a container in place (e.g. Pi-hole)
 
 Config lives in mounted volumes, not the image, so updates are non-destructive:

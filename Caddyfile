@@ -146,8 +146,11 @@ https://watch.{$DOMAIN} {
 # reverse-proxying to the host since dashboard/ runs as a plain Windows process (via
 # Task Scheduler, not a container) so it can subprocess scripts/rclone-sync.py and
 # scripts/seedbox-cleanup.py directly. See README's dashboard section for why.
+# DASHBOARD_UPSTREAM overrides that for the one deployment where it IS a container
+# (compose.nas.yml sets it to dashboard:8099); the inline default keeps a bare
+# `caddy adapt --env-file .env` validation run working with the var unset.
 http://stats.{$DOMAIN} {
-	reverse_proxy host.docker.internal:8099
+	reverse_proxy {$DASHBOARD_UPSTREAM:host.docker.internal:8099}
 }
 
 # Public route: real Let's Encrypt cert via the DNS-01 challenge above. Gated by
@@ -179,7 +182,7 @@ https://stats.{$DOMAIN} {
 			window 1m
 		}
 	}
-	reverse_proxy host.docker.internal:8099 {
+	reverse_proxy {$DASHBOARD_UPSTREAM:host.docker.internal:8099} {
 		header_up X-Real-IP {client_ip}
 	}
 }
