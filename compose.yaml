@@ -321,8 +321,9 @@ services:
       - romm_db:/var/lib/mysql
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      # (no start_interval: DSM's Container Manager ships a Compose too old to know
+      # it; the 10s interval below covers the startup window fine)
       start_period: 30s
-      start_interval: 10s
       interval: 10s
       timeout: 5s
       retries: 5
