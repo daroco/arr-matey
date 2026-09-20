@@ -62,6 +62,9 @@ MEDIA_ROOT = Path(_env["MEDIA_ROOT"])
 CONFIG_ROOT = Path(_env["CONFIG_ROOT"])
 NTFY_SERVER = _env.get("NTFY_SERVER", "https://ntfy.sh")
 NTFY_TOPIC = _env.get("NTFY_TOPIC", "")
+# Bearer token for the self-hosted ntfy (deny-all access by default); blank for
+# a server that allows anonymous publishing, e.g. public ntfy.sh.
+NTFY_TOKEN = _env.get("NTFY_TOKEN", "")
 
 LOG_PATH = CONFIG_ROOT / "rclone-sync-wrapper.log"
 
@@ -93,6 +96,7 @@ def notify_ntfy(title, message):
         r = requests.post(
             NTFY_SERVER,
             json={"topic": NTFY_TOPIC, "title": title, "message": message},
+            headers={"Authorization": f"Bearer {NTFY_TOKEN}"} if NTFY_TOKEN else None,
             timeout=10,
         )
         if not r.ok:

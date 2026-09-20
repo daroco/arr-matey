@@ -13,11 +13,14 @@ import requests
 log = logging.getLogger("dashboard.notify")
 
 
-def notify_ntfy(server, topic, title, message):
+def notify_ntfy(server, topic, title, message, token=""):
     if not topic:
         return
     try:
-        r = requests.post(server, json={"topic": topic, "title": title, "message": message}, timeout=10)
+        r = requests.post(
+            server, json={"topic": topic, "title": title, "message": message},
+            headers={"Authorization": f"Bearer {token}"} if token else None, timeout=10,
+        )
         if not r.ok:
             log.warning(f"ntfy notification rejected ({r.status_code}): {title} -- {r.text[:200]}")
     except requests.RequestException:

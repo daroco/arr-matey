@@ -117,6 +117,8 @@ class Config:
         # receiving these too.
         self.ntfy_server = env.get("NTFY_SERVER", "https://ntfy.sh")
         self.ntfy_topic = env.get("NTFY_TOPIC", "")
+        # Bearer token for the self-hosted ntfy (deny-all by default); blank = anonymous
+        self.ntfy_token = env.get("NTFY_TOKEN", "")
 
         self.dashboard_config_dir = config_root / "dashboard"
         self.dashboard_config_dir.mkdir(parents=True, exist_ok=True)

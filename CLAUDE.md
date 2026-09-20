@@ -119,9 +119,9 @@ The `Caddyfile` has three distinct route classes:
    separate compose project, not managed here) pointing at the host's LAN IP. Guarded by
    a `lanonly` snippet (`not remote_ip private_ranges` → 403) as defense-in-depth, though
    the real control is that port 80 is never forwarded at the router.
-2. **Public HTTPS** — exactly four hostnames (`watch.<domain>` → the `jellyfin` service,
+2. **Public HTTPS** — exactly five hostnames (`watch.<domain>` → the `jellyfin` service,
    `<domain>` apex → Seerr, `stats.<domain>` → the trace dashboard, `games.<domain>` →
-   RomM; `jellyseerr.<domain>`
+   RomM, `ntfy.<domain>` → the self-hosted ntfy push server; `jellyseerr.<domain>`
    used to also route to Seerr as a pre-rename leftover, retired as redundant), each
    with a real Let's Encrypt cert
    via the **DNS-01** challenge (`acme_dns cloudflare`, needs `CF_API_TOKEN`) specifically
@@ -146,7 +146,7 @@ xcaddy plugins — no L4/TCP-proxy module — and its `servers` block is pinned 
 `protocols h1 h2` (HTTP only), so raw TCP/UDP traffic (a game server, anything that
 isn't speaking HTTP) physically cannot route through it. The pattern for these is
 publish the port(s) directly in `compose.yaml` and forward them at the router, same as
-the four public HTTPS hostnames' 443 forward but for whatever ports the service
+the five public HTTPS hostnames' 443 forward but for whatever ports the service
 actually needs — no Cloudflare DNS record, no Caddyfile change, no rate limiting or
 IP-hiding (a real tradeoff worth knowing: unlike the HTTPS routes, a directly
 port-forwarded service has none of Cloudflare's WAF/origin-hiding). See the global
@@ -169,6 +169,14 @@ monitor, below); host port is 8085 because 8080 is local-mode qbittorrent's. The
 path case-insensitively (verified with a throwaway container), so `Roms/` on disk satisfies
 RomM's literal lowercase `roms` check — don't "fix" the casing, and don't try to rename it
 while a download into it is running (access denied, seen live).
+
+**`ntfy`** is the stack's own push-notification server (`binwiederhier/ntfy:v2`, public at
+`ntfy.<domain>`), added after public ntfy.sh's free-tier daily cap got hit. Every
+publisher (`rclone-sync.py`, `ddns-update.py`, `dashboard/notify.py`) posts to `NTFY_SERVER`
+with a `NTFY_TOKEN` bearer header; on the NAS that URL is the container by service name
+(`http://ntfy:8086`) because a bridge-network container cannot reach Caddy's macvlan
+address — only the phone uses the public hostname. Access is deny-all; users/tokens are
+created with `docker exec ntfy ntfy user add` / `ntfy token add` (README).
 
 `scripts/` — all standalone, stdlib-plus-`requirements.txt` (`requests`,
 `python-dotenv`, `PyYAML`), each reads `.env` directly rather than relying on shell

@@ -329,6 +329,39 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Self-hosted push notifications (ntfy) -- replaces the public ntfy.sh relay
+  # every script and the dashboard used to post to, after its free-tier daily
+  # message cap got hit for real. Same shape as every other HTTP app here:
+  # http://ntfy.${DOMAIN} on the LAN, https://ntfy.${DOMAIN} publicly through
+  # Caddy so the phone app reaches it off-LAN. Access is deny-all by default:
+  # publishing needs a token (NTFY_TOKEN in .env) and the phone logs in with a
+  # user, so a topic name is no longer a shared secret the way it was on ntfy.sh.
+  # Runs as PUID/PGID (create ${CONFIG_ROOT}/ntfy/{data,cache} owned by them
+  # first -- Docker would otherwise create them root-owned and ntfy can't
+  # write its databases), which is also why it listens on 8086 rather than
+  # 80: a non-root process can't bind a privileged port. Major-pinned like romm.
+  ntfy:
+    image: binwiederhier/ntfy:v2
+    container_name: ntfy
+    command: serve
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ=${TZ:-UTC}
+      - NTFY_LISTEN_HTTP=:8086
+      - NTFY_BASE_URL=https://ntfy.${DOMAIN}
+      - NTFY_BEHIND_PROXY=true
+      - NTFY_AUTH_FILE=/var/lib/ntfy/user.db
+      - NTFY_AUTH_DEFAULT_ACCESS=deny-all
+      - NTFY_ENABLE_LOGIN=true
+      - NTFY_CACHE_FILE=/var/cache/ntfy/cache.db
+      - NTFY_CACHE_DURATION=48h
+    volumes:
+      - ${CONFIG_ROOT}/ntfy/data:/var/lib/ntfy
+      - ${CONFIG_ROOT}/ntfy/cache:/var/cache/ntfy
+    ports:
+      - "8086:8086"
+    restart: unless-stopped
+
 volumes:
   caddy_data:
   caddy_config:

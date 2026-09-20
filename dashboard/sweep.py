@@ -109,7 +109,7 @@ def _flush_pending(cfg, db, pending):
         parts = [f"{t} (x{counts[t]})" if counts[t] > 1 else t for t in unique]
         msg_title = f"Dashboard: {headline}" + (f" ({len(unique)})" if len(unique) > 1 else "")
         message = "; ".join(parts)
-        notify_ntfy(cfg.ntfy_server, cfg.ntfy_topic, msg_title[:200], message[:1000])
+        notify_ntfy(cfg.ntfy_server, cfg.ntfy_topic, msg_title[:200], message[:1000], cfg.ntfy_token)
         # In-app notification list mirrors this exactly, independent of whether ntfy
         # is even configured (NTFY_TOPIC blank is a real, supported setup -- see
         # notify.py -- and the in-app list should still work on its own). The row can

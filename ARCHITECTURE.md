@@ -172,6 +172,7 @@ flowchart TD
     DEV -->|http://correll.tv| CD
     DEV -->|http://watch.correll.tv| CD
     DEV -->|http://games.correll.tv| CD
+    DEV -->|http://ntfy.correll.tv| CD
     CD --> SO2["sonarr:8989"]
     CD --> RA2["radarr:7878"]
     CD --> PR2["prowlarr:9696"]
@@ -179,14 +180,17 @@ flowchart TD
     CD --> JS2["jellyseerr:5055"]
     CD --> JF2["host.docker.internal:8096"]
     CD --> RM2["romm:8080"]
+    CD --> NT2["ntfy:8086"]
 
     CF["Cloudflare: public A records"] -.->|"resolves watch/apex.correll.tv to the WAN IP"| PHONE["Any device off-LAN"]
     PHONE -->|"https://watch.correll.tv (router forwards :443 only)"| CD2["Caddy :443<br/>real Let's Encrypt certs, DNS-01"]
     PHONE -->|"https://correll.tv"| CD2
     PHONE -->|"https://games.correll.tv"| CD2
+    PHONE -->|"https://ntfy.correll.tv (push subscriptions)"| CD2
     CD2 --> JF2
     CD2 --> JS2
     CD2 --> RM2
+    CD2 --> NT2
 
     class CF,PHONE,CD2 public
     classDef public fill:#e4e8fb,stroke:#4b5fbd,color:#26305c,stroke-width:2px;
@@ -198,9 +202,10 @@ flowchart TD
 > public routes possible at all: Let's Encrypt can't issue a certificate for a name that
 > doesn't resolve publicly, which a made-up TLD or a Pi-hole-only record never would.
 >
-> `watch.correll.tv`, bare `correll.tv`, `stats.correll.tv` and `games.correll.tv` (RomM,
-> the retro game library — see README's RomM section) are deliberately the only hostnames
-> with public DNS records — the same four the Caddyfile's `rate_limit` blocks apply to
+> `watch.correll.tv`, bare `correll.tv`, `stats.correll.tv`, `games.correll.tv` (RomM, the
+> retro game library) and `ntfy.correll.tv` (the self-hosted push server) are deliberately
+> the only hostnames with public DNS records — the same five the Caddyfile's `rate_limit`
+> blocks apply to
 > (`jellyseerr.correll.tv` used to be a third, pre-rename leftover pointed at the same
 > Seerr backend as bare `correll.tv` — retired as redundant). Every other `*.correll.tv`
 > name only exists in Pi-hole's local records

@@ -436,8 +436,8 @@ the Caddyfile each apply it per-visitor: a generous general ceiling (300 req/min
 shouldn't affect real browsing/streaming, plus a tighter zone (10 req/min) scoped to each
 app's own login endpoint specifically (Jellyfin's `/Users/AuthenticateByName`; Seerr's
 `/api/v1/auth/*`, covering its Jellyfin-backed, local, and Plex login routes; RomM's
-`/api/login`, `/api/token` and password-reset paths on `https://games.{$DOMAIN}`), to
-blunt credential-stuffing. Both zones on both blocks are keyed on `{client_ip}`, not
+`/api/login`, `/api/token` and password-reset paths on `https://games.{$DOMAIN}`; ntfy's
+`/v1/account*` on `https://ntfy.{$DOMAIN}`), to blunt credential-stuffing. Both zones on both blocks are keyed on `{client_ip}`, not
 `{remote_host}` — with Cloudflare proxying in front, every request's TCP peer is a
 Cloudflare edge IP, so keying on the raw peer would rate-limit everyone as if they were
 one visitor.
@@ -1129,6 +1129,44 @@ IGDB/SteamGridDB/RetroAchievements/ScreenScraper are optional keys in `.env`, bl
   point at the right place.
 - Host port is `8085`, not RomM's default `8080` — local-mode qBittorrent owns 8080.
 - `romm-db` is never published to the host; `romm` reaches it container-to-container.
+
+---
+
+## Push notifications: the self-hosted ntfy server (`ntfy.{$DOMAIN}`)
+
+Every notification in this stack — rclone-sync's per-file "landed" pushes, DDNS changes,
+the dashboard's diagnosis sweep — goes through [ntfy](https://ntfy.sh). It used to go
+through the public ntfy.sh relay, which worked until its free-tier daily message cap got
+hit for real; the `ntfy` service in `compose.yaml` (`binwiederhier/ntfy:v2`, major-pinned
+like RomM) is the same server self-hosted, with no cap and no shared-secret topic name.
+
+**Routing.** `http://ntfy.{$DOMAIN}` on the LAN and `https://ntfy.{$DOMAIN}` publicly, the
+same Caddy pattern as every other public hostname (own Cloudflare `A` record, `DDNS_RECORDS`
+slot, Pi-hole record, rate limits with the login zone on `/v1/account*`). The phone app uses
+the public hostname. The *publishers* don't: `NTFY_SERVER` in `.env` is `http://ntfy:8086`,
+the container by service name, because on the NAS the scripts run inside the `dashboard`
+container and a bridge-network container can't reach Caddy's macvlan address (on Windows,
+where they're host processes, it's `http://localhost:8086`).
+
+**Access.** `NTFY_AUTH_DEFAULT_ACCESS=deny-all`: nothing is readable or writable
+anonymously. One-time setup after the first `docker compose up -d ntfy`:
+
+```bash
+docker exec -e NTFY_PASSWORD='<a real password>' ntfy ntfy user add --role=admin <you>
+docker exec ntfy ntfy token add <you>      # prints tk_... -> NTFY_TOKEN in .env
+docker compose restart dashboard            # the dashboard reads .env at start; scripts on each run
+```
+
+Then in the Android app: Settings → Manage users → add `https://ntfy.{$DOMAIN}` with that
+user/password, and subscribe to `NTFY_TOPIC` on that server. (iOS additionally needs the
+app's "upstream" set to ntfy.sh, which relays only the wake-up, not the message body.)
+
+**Gotchas.** The container runs as `PUID:PGID`, so `${CONFIG_ROOT}/ntfy/data` and
+`${CONFIG_ROOT}/ntfy/cache` must exist and be owned by them *before* first start — Docker
+creates missing bind-mount folders as root and ntfy then can't write its databases. That's
+also why it listens on 8086 inside the container rather than 80 (non-root can't bind a
+privileged port). Cloudflare's proxy is fine with ntfy's long-lived subscription streams;
+ntfy's 45-second keepalive stays under Cloudflare's idle timeout.
 
 ---
 

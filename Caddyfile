@@ -227,6 +227,46 @@ https://games.{$DOMAIN} {
 	}
 }
 
+# LAN-only route for the self-hosted ntfy server (push notifications). The
+# scripts and the dashboard don't come through here -- they post straight to
+# the container by service name (NTFY_SERVER=http://ntfy:8086 on the NAS), since
+# a container can't reach Caddy's own macvlan address; this route is for a
+# browser/phone on the LAN.
+http://ntfy.{$DOMAIN} {
+	import lanonly
+	reverse_proxy ntfy:8086
+}
+
+# Public route: same posture as the other https:// blocks. ntfy's own auth gates
+# everything (deny-all default, per-user login + tokens). Subscriptions are
+# long-lived streams (websocket or long-poll json) with a 45s keepalive, which
+# reverse_proxy handles as-is. The login zone covers the token/login endpoints
+# the phone app and the web UI hit with credentials.
+https://ntfy.{$DOMAIN} {
+	rate_limit {
+		zone ntfy_general {
+			match {
+				not remote_ip private_ranges
+			}
+			key {client_ip}
+			events 300
+			window 1m
+		}
+		zone ntfy_login {
+			match {
+				path /v1/account/token /v1/account
+				not remote_ip private_ranges
+			}
+			key {client_ip}
+			events 10
+			window 1m
+		}
+	}
+	reverse_proxy ntfy:8086 {
+		header_up X-Real-IP {client_ip}
+	}
+}
+
 http://prowlarr.{$DOMAIN} {
 	import lanonly
 	reverse_proxy prowlarr:9696

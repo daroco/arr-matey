@@ -53,6 +53,9 @@ CF_ZONE = _env["CF_ZONE"]
 DDNS_RECORDS = [r.strip() for r in _env["DDNS_RECORDS"].split(",") if r.strip()]
 NTFY_SERVER = _env.get("NTFY_SERVER", "https://ntfy.sh")
 NTFY_TOPIC = _env.get("NTFY_TOPIC", "")
+# Bearer token for the self-hosted ntfy (deny-all access by default); blank for
+# a server that allows anonymous publishing, e.g. public ntfy.sh.
+NTFY_TOKEN = _env.get("NTFY_TOKEN", "")
 
 LOG_PATH = Path(CONFIG_ROOT) / "ddns-update.log"
 # Exists while runs are being skipped because a VPN owns the default route --
@@ -110,6 +113,7 @@ def notify_ntfy(title, message):
         r = requests.post(
             NTFY_SERVER,
             json={"topic": NTFY_TOPIC, "title": title, "message": message},
+            headers={"Authorization": f"Bearer {NTFY_TOKEN}"} if NTFY_TOKEN else None,
             timeout=10,
         )
         if not r.ok:
