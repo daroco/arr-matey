@@ -38,8 +38,11 @@ _CONFIG_ROOT = Path(_env["CONFIG_ROOT"])
 SONARR_CONFIG = _CONFIG_ROOT / "sonarr" / "config.xml"
 RADARR_CONFIG = _CONFIG_ROOT / "radarr" / "config.xml"
 LOG_PATH = _CONFIG_ROOT / "seedbox-cleanup.log"
-SONARR_BASE = "http://localhost:8989"
-RADARR_BASE = "http://localhost:7878"
+# Same *_BASE_URL override provision.py and dashboard/config.py honour: localhost is
+# right when this runs as a host process (Windows), the service name when it runs
+# inside the dashboard container (NAS) -- see .env.example's NAS block.
+SONARR_BASE = _env.get("SONARR_BASE_URL") or "http://localhost:8989"
+RADARR_BASE = _env.get("RADARR_BASE_URL") or "http://localhost:7878"
 HISTORY_PAGE_SIZE = 250
 REQUEST_TIMEOUT = 60
 TRANSMISSION_HANDSHAKE_ATTEMPTS = 3
