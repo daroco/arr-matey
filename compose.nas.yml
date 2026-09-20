@@ -61,6 +61,18 @@ services:
       - ${MEDIA_ROOT}:${MEDIA_ROOT}
     restart: unless-stopped
 
+  romm:
+    # Btrfs delivers inotify events, so RomM's filesystem watcher works here, and
+    # the nightly crawl compose.yaml schedules for Windows (where the NTFS bind
+    # mount swallows those events) is pure disk churn: 7,500 files stat'd at 4am
+    # for no reason. Watch the library for changes instead; nothing periodic
+    # touches the drive. Compose merges environment by key, so only these three
+    # change -- everything else in the base romm service stands.
+    environment:
+      - ENABLE_SCHEDULED_RESCAN=false
+      - ENABLE_RESCAN_ON_FILESYSTEM_CHANGE=true
+      - RESCAN_ON_FILESYSTEM_CHANGE_DELAY=5
+
 networks:
   lan:
     # The explicit name is load-bearing, not cosmetic. A container on two networks

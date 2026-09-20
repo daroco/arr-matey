@@ -1109,11 +1109,13 @@ reference `ROMS_ROOT` actually has `Roms/` on disk and works anyway because Dock
 Desktop's Windows bind mounts resolve paths case-insensitively (verified with a
 throwaway container, not assumed — don't "fix" the casing).
 
-**Adding games**: drop files into `roms/<slug>/`, then Library → Scan in the UI, or wait
-for the nightly rescan (`SCHEDULED_RESCAN_CRON`, 4am). RomM's filesystem watcher is
-deliberately **off** — it relies on inotify, which doesn't reliably cross the
-NTFS-into-Linux bind-mount boundary, the same reason Jellyfin's realtime monitor is only
-a backup here (CLAUDE.md). Hasheous (hash-based matching, no account) is always on;
+**Adding games**: drop files into `roms/<slug>/`, then Library → Scan in the UI. On
+Windows the nightly rescan (`SCHEDULED_RESCAN_CRON`, 4am) also picks them up, and RomM's
+filesystem watcher is deliberately **off** there — it relies on inotify, which doesn't
+reliably cross the NTFS-into-Linux bind-mount boundary, the same reason Jellyfin's
+realtime monitor is only a backup on that host (CLAUDE.md). On the NAS it's the reverse
+(`compose.nas.yml`): Btrfs delivers inotify events, so the watcher is on and the nightly
+crawl is off — nothing periodic touches the drive. Hasheous (hash-based matching, no account) is always on;
 IGDB/SteamGridDB/RetroAchievements/ScreenScraper are optional keys in `.env`, blank = off.
 
 **Gotchas worth knowing before they bite:**
