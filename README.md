@@ -891,18 +891,23 @@ does **not** re-notify; if it stops firing (fixed, or the underlying condition r
 its record clears, so if the exact same problem shows up again later it's treated as new
 and notifies again rather than staying silently suppressed forever.
 
-Notifications are **grouped and batched by title, not sent one per diagnosis** — the
-exact same fix `scripts/rclone-sync.py` already applies to its own per-file notifications
-(see that script's `flush_pending`). A season pack spans several attempts (one per
-episode grab), each of which can independently trip the same rule — without batching, one
-real "this show is stuck" situation for a multi-episode season pack turned into a wall of
-near-duplicate pushes (confirmed live: 8 separate pushes for one title before this fix).
-Every diagnosis a rule returns is automatically eligible for this — nothing extra to wire
-up when adding a new rule, see `.claude/skills/dashboard-add-rule`.
+Notifications are **grouped and batched by category, not sent one per diagnosis**: one
+push per problem type per sweep, naming every title it hit — `No seeders (3)` /
+`Tires (x2); The Curse; Nathan for You`. This went through two rounds. The first grouped
+per title, the same fix `scripts/rclone-sync.py` applies to its own per-file
+notifications: a season pack spans several attempts, each of which can trip the same
+rule, and per-diagnosis pushing turned one stuck show into a wall of near-duplicates
+(confirmed live: 8 pushes for one title). That still left a sweep that found the same
+problem across six shows sending six identical-looking pushes, hence the transpose to
+per-category. A title with two different problems appears in both pushes; a title that
+tripped one rule across several attempts collapses to an `(xN)` suffix. Every diagnosis a
+rule returns is automatically eligible — nothing extra to wire up when adding a new rule,
+see `.claude/skills/dashboard-add-rule`.
 
 Every push is also mirrored in-app: the bell icon in the header (every page, via
 `/partials/notif-badge`) shows an unread count and links to `/notifications`, a full list
-of every batched notification ever sent, each linking back to the request it's about.
+of every batched notification ever sent. A row links back to its request when the
+category hit exactly one title; a multi-title row names them all in its message instead.
 Visiting the page clears the badge. This works independent of ntfy — leaving `NTFY_TOPIC`
 blank (a supported, real setup — see `.env.example`) still populates the in-app list, it
 just skips the actual push.

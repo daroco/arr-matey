@@ -211,7 +211,8 @@ fixing that one instance by hand -- four real cases (season-number mismatch, man
 import required, never grabbed, unextracted RAR archive) already went through that exact
 loop. `dashboard/sweep.py` runs this same rule evaluation on its own background schedule
 (`DASHBOARD_NOTIFY_POLL_SECONDS`) independent of the on-demand "stalled only" filter,
-pushes a batched-per-title ntfy notification (see `notify.py`) the first time a diagnosis
+pushes a batched-per-category ntfy notification (one push per problem type naming every
+affected title, see `notify.py`/`sweep.py`) the first time a diagnosis
 appears, and mirrors every push in-app (bell icon + `/notifications`) — any rule added via
 the skill above is automatically covered, nothing extra to wire up. Registered as the
 `acquisitions-dashboard` Task Scheduler task; restarting after a code change needs

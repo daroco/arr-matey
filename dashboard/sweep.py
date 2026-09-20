@@ -37,23 +37,25 @@ async def run_sweep(snap, cfg, db, *, notify=False):
     firing get cleared so a later re-occurrence is treated as fresh again rather
     than staying silently "already notified" forever.
 
-    Grouped and batched by title exactly like rclone-sync.py's own notify_new_files/
-    flush_pending (same problem, same fix: a season pack spans several attempts, each
-    of which can independently trip the same one or two rule ids, so per-diagnosis
-    pushing turned one real problem into a wall of near-duplicate notifications --
-    confirmed live, Magic School Bus alone fired 8 separate pushes across 4 attempts x
-    2 rule ids for what a person reads as a single "this show is stuck" situation).
-    Collapses to one push per title per sweep, deduped with an (xN) count suffix for
-    anything that repeated across attempts."""
+    Grouped and batched by CATEGORY (the diagnosis headline: "No seeders", "Import
+    failed", ...), one push per category per sweep listing every title it hit. This
+    replaced an earlier per-title grouping: that one already stopped the per-diagnosis
+    flood (a season pack spans several attempts that each trip the same rule --
+    Magic School Bus alone fired 8 pushes for one stuck show before batching at all),
+    but a sweep that finds the same problem across six shows still produced six pushes
+    that read identically. One "No seeders (6)" push naming the six shows is what a
+    person actually wants to see on their phone. A title that trips two different
+    rules appears in both category pushes; repeats of one title within a category
+    (several attempts of one show) collapse to an (xN) suffix."""
     candidate_ids = correlate.matched_request_ids(snap)
     is_seedbox = cfg.download_mode != "local"
     wrapper_summary, _ = local_fs.tail_wrapper_log(cfg.rclone_wrapper_log) if is_seedbox else (None, [])
     sem = asyncio.Semaphore(CONCURRENCY)
     stalled_ids = set()
     touched_keys = set()
-    # title -> {"request_id": int|None, "severity": str, "headlines": [str, ...]},
-    # flushed to one push (and one in-app notification row) per title.
-    pending = defaultdict(lambda: {"request_id": None, "severity": "info", "headlines": []})
+    # headline -> {"severity": str, "titles": [(title, request_id), ...]}, flushed to
+    # one push (and one in-app notification row) per headline/category.
+    pending = defaultdict(lambda: {"severity": "info", "titles": []})
 
     async def handle_diagnosis(scope_type, scope_key, d, title, request_id):
         touched_keys.add((scope_type, scope_key, d.rule_id))
@@ -64,11 +66,10 @@ async def run_sweep(snap, cfg, db, *, notify=False):
             state_mod.upsert_diagnosis, db, scope_type, scope_key, d.rule_id, d.severity.value, detail_json
         )
         if is_new and d.severity.value != "ok":
-            group = pending[title]
-            group["request_id"] = request_id
+            group = pending[d.headline]
             if SEVERITY_RANK[d.severity.value] > SEVERITY_RANK[group["severity"]]:
                 group["severity"] = d.severity.value
-            group["headlines"].append(d.headline)
+            group["titles"].append((title, request_id))
 
     async def check(request_id):
         # One slow/failed source must not take the whole sweep down -- same
@@ -101,22 +102,24 @@ async def run_sweep(snap, cfg, db, *, notify=False):
 
 
 def _flush_pending(cfg, db, pending):
-    for title, group in pending.items():
-        headlines = group["headlines"]
-        counts = Counter(headlines)
-        unique = list(dict.fromkeys(headlines))   # de-dupe, keep first-seen order
-        if len(unique) == 1 and counts[unique[0]] == 1:
-            msg_title, message = f"Dashboard: {unique[0]}", title
-        else:
-            parts = [f"{h} (x{counts[h]})" if counts[h] > 1 else h for h in unique]
-            msg_title, message = f"Dashboard: {title}", "; ".join(parts)
+    for headline, group in pending.items():
+        titles = [t for t, _ in group["titles"]]
+        counts = Counter(titles)
+        unique = list(dict.fromkeys(titles))   # de-dupe, keep first-seen order
+        parts = [f"{t} (x{counts[t]})" if counts[t] > 1 else t for t in unique]
+        msg_title = f"Dashboard: {headline}" + (f" ({len(unique)})" if len(unique) > 1 else "")
+        message = "; ".join(parts)
         notify_ntfy(cfg.ntfy_server, cfg.ntfy_topic, msg_title[:200], message[:1000])
         # In-app notification list mirrors this exactly, independent of whether ntfy
         # is even configured (NTFY_TOPIC blank is a real, supported setup -- see
-        # notify.py -- and the in-app list should still work on its own).
+        # notify.py -- and the in-app list should still work on its own). The row can
+        # only link back to a request when the category hit exactly one title; a
+        # multi-title push names them all in the message instead.
+        request_ids = {rid for _, rid in group["titles"] if rid is not None}
         state_mod.insert_notification(
-            db, title=title, request_id=group["request_id"], severity=group["severity"],
-            headline=msg_title[len("Dashboard: "):], message=message,
+            db, title=unique[0] if len(unique) == 1 else f"{len(unique)} titles",
+            request_id=next(iter(request_ids)) if len(request_ids) == 1 else None,
+            severity=group["severity"], headline=msg_title[len("Dashboard: "):], message=message,
         )
 
 
