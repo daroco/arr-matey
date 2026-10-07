@@ -6,7 +6,7 @@
 # or set COMPOSE_FILE=compose.yaml:compose.nas.yml in .env once, so plain
 # `docker compose ...` picks both up every time (what README's NAS section does).
 #
-# It changes exactly two things about the base stack:
+# It changes three things about the base stack:
 #
 # 1. Caddy gets its own LAN IP (macvlan) instead of the host's ports 80/443. DSM's
 #    own nginx owns both of those on the NAS's address and takes them back on every
@@ -25,6 +25,20 @@
 #    needs no Python of its own -- DSM's bundled one is old, pip-less, and gets
 #    replaced on updates. Scheduled runs become DSM Task Scheduler entries that
 #    `docker exec dashboard python scripts/<name>.py` (README's NAS section).
+#
+# 3. The movie library can live on a second volume (MOVIES_ROOT, README "Splitting
+#    the library across two volumes"). Two 8 TB SMR drives can't usefully be one
+#    pool (adding the second makes a mirror, not space), so movies/ moves to
+#    Volume 2 and tv/ stays. Hardlinks can't cross volumes, so the design keeps ONE
+#    download staging tree on Volume 1 and lets Radarr's import copy across:
+#    Radarr sees Volume 2 at /media with Volume 1's downloads/ nested inside at
+#    /media/downloads, so every path Radarr, Jellyfin and Bazarr ever stored stays
+#    byte-identical -- no root-folder edits, no Jellyfin re-scan, watch history
+#    intact (Jellyfin derives item ids from paths). The cost is a transient
+#    duplicate of each in-flight movie (staging copy on Volume 1 until seedbox
+#    cleanup releases it, library copy on Volume 2) -- the deliberate, documented
+#    exception to the README's one-mount rule, not a regression of it. MOVIES_ROOT
+#    defaults to MEDIA_ROOT so this overlay is a no-op on a single-volume host.
 
 services:
 
@@ -33,6 +47,23 @@ services:
       default: {}
       lan:
         ipv4_address: ${CADDY_LAN_IP}
+
+  radarr:
+    volumes:
+      # Volume 2 as /media (movies/ lives there); Volume 1's staging nested over
+      # /media/downloads so the Remote Path Mappings and root folder stay as-is.
+      # Compose merges `volumes` by container path, so this replaces the base
+      # file's ${MEDIA_ROOT}:/media rather than adding a second /media.
+      - ${MOVIES_ROOT:-${MEDIA_ROOT}}:/media
+      - ${MEDIA_ROOT}/downloads:/media/downloads
+
+  bazarr:
+    volumes:
+      - ${MOVIES_ROOT:-${MEDIA_ROOT}}/movies:/media/movies
+
+  jellyfin:
+    volumes:
+      - ${MOVIES_ROOT:-${MEDIA_ROOT}}/movies:/media/movies
 
   dashboard:
     build:
@@ -59,6 +90,7 @@ services:
       # sides means those values are simply true in here too, no translation layer.
       - ${CONFIG_ROOT}:${CONFIG_ROOT}
       - ${MEDIA_ROOT}:${MEDIA_ROOT}
+      - ${MOVIES_ROOT:-${MEDIA_ROOT}}:${MOVIES_ROOT:-${MEDIA_ROOT}}
     restart: unless-stopped
 
   romm:

@@ -1341,6 +1341,52 @@ Stop the old stack first (`docker compose down`) — the app configs are live SQ
   `${CONFIG_ROOT}/rclone/` too and fix the path inside the conf — it has to be a path
   that exists *inside the dashboard container*, which `${CONFIG_ROOT}` does.
 
+### Splitting the library across two volumes (`MOVIES_ROOT`)
+
+Two 8 TB drives in the DS925+ can't usefully be one pool: adding the second to a
+single-drive pool makes a mirror (zero new space), and RAID 0/JBOD would mean wiping the
+drive that holds everything. So the second drive is its own Basic/Btrfs **Volume 2**, and
+the library splits: `movies/` moves there, `tv/` stays on Volume 1.
+
+**What deliberately does *not* move: `downloads/`.** Hardlinks can't cross volumes, so a
+staging tree on each volume would need per-app seedbox categories, four rclone pairs and
+per-app remote path mappings to route every finished download to the right drive. Instead
+the one staging tree stays on Volume 1 and Radarr's import **copies** across — the single,
+documented exception to this README's one-mount rule. The cost is a transient duplicate of
+each in-flight movie (staging copy until seedbox cleanup releases it, library copy on
+Volume 2); on a volume with ~2 TB free after the split that's noise. TV, the bulk of the
+library and of the traffic, keeps hardlinking exactly as before.
+
+**Nothing inside any container changes path.** `compose.nas.yml` gives Radarr Volume 2 at
+`/media` with Volume 1's `downloads/` nested at `/media/downloads`, and gives Jellyfin and
+Bazarr Volume 2's `movies/` nested at `/media/movies`. Radarr's root folder, its movie
+file paths, the remote path mappings, Bazarr's paths and Jellyfin's library all stay
+byte-identical — which matters most for Jellyfin, whose item ids derive from paths: a
+moved library path would reset every movie's watched status.
+
+**Procedure** (one-off, on the NAS; `media2` = the shared folder on Volume 2):
+
+```bash
+# 1. nothing writes to movies/ while it copies
+sudo docker compose stop radarr bazarr jellyfin          # check Jellyfin sessions first
+# 2. copy (hours: ~1.6 TB at SMR speeds). -H keeps multi-file movies' own links; links
+#    INTO downloads/ are meant to break -- the staging copy stays behind on Volume 1
+sudo rsync -aH --info=progress2 /volume1/media/movies/ /volume2/media2/movies/
+# 3. verify: zero files to transfer
+sudo rsync -aHn --stats /volume1/media/movies/ /volume2/media2/movies/ | grep -E "transferred|created"
+# 4. the Synology-ACL gotcha from the bring-up, again, for the new shared folder
+sudo chown -R 1026:100 /volume2/media2 && sudo chmod -R u+rwX,g+rwX,o+rX /volume2/media2
+# 5. point the stack at it and bring the three back
+echo MOVIES_ROOT=/volume2/media2 >> .env   # or edit; see .env.example's NAS block
+sudo docker compose up -d radarr bazarr jellyfin dashboard
+# 6. only after Radarr shows no missing files and Jellyfin plays a movie from it:
+sudo mv /volume1/media/movies /volume1/media/movies.old && df -h /volume1 /volume2
+# ... and a few days later: sudo rm -rf /volume1/media/movies.old
+```
+
+`sudo docker exec radarr ls /media/movies | head` and `sudo docker exec radarr ls
+/media/downloads` prove the nested mounts: the first lists Volume 2, the second Volume 1.
+
 ### Scheduled jobs
 
 Control Panel → Task Scheduler → Create → Scheduled Task → User-defined script, user

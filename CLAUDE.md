@@ -267,6 +267,13 @@ file**: `uname` answers it. What changes there, all of it confined to the
   literally lowercase `roms/` (the "don't fix the casing" note above is a Docker Desktop
   fact, not a NAS one), and Jellyfin's realtime monitor / RomM's watcher are reliable
   there, unlike the NTFS bind-mount situation described below.
+- **The movie library is on a second volume** (`MOVIES_ROOT=/volume2/media2`); `tv/` and the
+  ONE `downloads/` staging tree stay on Volume 1. Radarr mounts Volume 2 at `/media` with
+  Volume 1's `downloads/` nested at `/media/downloads`; Jellyfin/Bazarr get Volume 2's
+  `movies/` nested at `/media/movies`. No container path changed. Radarr's import
+  therefore *copies* across volumes -- the one deliberate exception to the one-mount
+  rule, see `compose.nas.yml`'s header and README "Splitting the library across two
+  volumes". Don't "fix" that by moving `downloads/`, and don't move `tv/`.
 - `docker` needs `sudo` on DSM, and `MSYS_NO_PATHCONV=1` is meaningless (no Git Bash).
 - Seerr's container ignores `PUID` and runs as UID 1000: its config folder needs
   `chown 1000:1000`, everything else `PUID:PGID` (1026:100 on DSM, not 1000:1000).
