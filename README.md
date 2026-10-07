@@ -1367,8 +1367,8 @@ moved library path would reset every movie's watched status.
 **Procedure** (one-off, on the NAS; `media2` = the shared folder on Volume 2):
 
 ```bash
-# 1. nothing writes to movies/ while it copies
-sudo docker compose stop radarr bazarr jellyfin          # check Jellyfin sessions first
+# 1. nothing writes to movies/ while it copies (Jellyfin only reads -- leave it up)
+sudo docker compose stop radarr bazarr
 # 2. copy (hours: ~1.6 TB at SMR speeds). -H keeps multi-file movies' own links; links
 #    INTO downloads/ are meant to break -- the staging copy stays behind on Volume 1
 sudo rsync -aH --info=progress2 /volume1/media/movies/ /volume2/media2/movies/
@@ -1376,7 +1376,7 @@ sudo rsync -aH --info=progress2 /volume1/media/movies/ /volume2/media2/movies/
 sudo rsync -aHn --stats /volume1/media/movies/ /volume2/media2/movies/ | grep -E "transferred|created"
 # 4. the Synology-ACL gotcha from the bring-up, again, for the new shared folder
 sudo chown -R 1026:100 /volume2/media2 && sudo chmod -R u+rwX,g+rwX,o+rX /volume2/media2
-# 5. point the stack at it and bring the three back
+# 5. point the stack at it; this recreates Jellyfin too, so check for sessions first
 echo MOVIES_ROOT=/volume2/media2 >> .env   # or edit; see .env.example's NAS block
 sudo docker compose up -d radarr bazarr jellyfin dashboard
 # 6. only after Radarr shows no missing files and Jellyfin plays a movie from it:
