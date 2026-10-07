@@ -309,6 +309,20 @@ from scratch.
   VPN-looking default route exists (`vpn_default_routes()`, one ntfy push per VPN
   session via a `ddns-vpn-paused.flag` marker in `${CONFIG_ROOT}`) — a "DDNS paused"
   notification means exactly this, not a script failure. Still fix it by disconnecting.
+- **Cloudflare's Encrypted Client Hello (ECH) breaks the LAN path to every public hostname.**
+  With a proxied record, Cloudflare publishes an HTTPS (type 65) DNS record carrying an
+  `ech=` key. Pi-hole only overrides the A record, so a LAN browser gets the override
+  (Caddy's IP) *and* the upstream HTTPS record, then sends an Encrypted Client Hello whose
+  outer SNI is Cloudflare's — straight at Caddy, which can't decrypt it and aborts the
+  handshake. Symptom: Firefox `SSL_ERROR_INTERNAL_ERROR_ALERT` (Chrome: a generic SSL
+  protocol error) on `https://watch.<domain>` etc. from inside the house only, while
+  `openssl s_client` against Caddy shows a perfectly valid cert and the public path works.
+  Seen live 2026-10-07 after the NAS move. Fix: Cloudflare dashboard → SSL/TLS → Edge
+  Certificates → Encrypted Client Hello → **Off** (zone-wide, fixes every LAN client; the
+  API route needs a Zone Settings scope the DDNS token deliberately lacks). Verify with
+  `curl -H 'accept: application/dns-json' 'https://cloudflare-dns.com/dns-query?name=watch.<domain>&type=HTTPS'`
+  — the `ech=` parameter must be gone. Pi-hole-side alternative: `filter-rr=HTTPS` in
+  dnsmasq's extra lines, which strips the record for every domain on the LAN.
 - **Cloudflare's own API can have real outages independent of DNS/edge health** — check
   `cloudflarestatus.com` before assuming a local config problem when only API calls
   (not the actual proxied sites) are failing with `521`s or timeouts.

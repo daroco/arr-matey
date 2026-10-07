@@ -164,3 +164,24 @@ WAN IP rotated (residential IPs aren't static -- check the ddns log for a recent
 validation, a VPN got connected (step 1), or a Cloudflare-side change (step 4). Don't
 assume it's a new class of problem until 1-7 are all ruled out -- so far, it never
 has been.
+
+## 9. HTTPS fails from the LAN only, with a valid certificate (ECH)
+
+Symptom: Firefox `SSL_ERROR_INTERNAL_ERROR_ALERT` (Chrome: `ERR_SSL_PROTOCOL_ERROR`) on
+`https://watch.correll.tv` or any other *public* hostname, **only from inside the house**,
+while `openssl s_client -connect <caddy-ip>:443 -servername watch.correll.tv` shows a
+valid Let's Encrypt cert and the public path (phone on cellular, r.jina.ai) works.
+
+Cause: Cloudflare publishes an HTTPS (type 65) record with an `ech=` key for every
+proxied name. Pi-hole overrides only the A record, so a LAN browser gets Caddy's IP plus
+the upstream ECH key, sends an Encrypted Client Hello with Cloudflare's outer SNI, and
+Caddy aborts the handshake. Confirm:
+
+```bash
+curl -s -H 'accept: application/dns-json' \
+  'https://cloudflare-dns.com/dns-query?name=watch.correll.tv&type=HTTPS' | grep -o 'ech=[A-Za-z0-9+/=]\{0,20\}'
+```
+
+Fix: Cloudflare dashboard → SSL/TLS → Edge Certificates → **Encrypted Client Hello → Off**
+(the DDNS API token lacks the settings scope on purpose). The `ech=` parameter disappears
+within minutes; then the browser connects normally. Seen live 2026-10-07.
