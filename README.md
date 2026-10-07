@@ -179,6 +179,31 @@ Local mode section (after section 9) for `local` mode.
 
 ---
 
+### Steering grabs toward direct-play formats
+
+`provision.py` also installs four **custom formats** in both apps
+(`configure_playback_custom_formats`) and scores them on every quality profile:
+
+| Custom format | Score | Why |
+|---|---|---|
+| Avoid - HEVC/x265 | -1000 | browsers can't play it; forces a software transcode |
+| Avoid - 10-bit/HDR/DV | -1000 | tone-mapping transcode on anything that isn't an HDR TV |
+| Avoid - AV1 | -1000 | Roku and most TVs can't decode it |
+| Prefer - H.264 | +50 | what every client in the house direct-plays |
+
+With `minFormatScore` at 0 the three "avoid" formats reject a release outright rather than
+just ranking it lower, and with `upgradeAllowed` on and `cutoffFormatScore` at 50 an
+existing HEVC file counts as *cutoff unmet*, so Sonarr/Radarr replace it with an H.264
+release when one appears (Wanted → Cutoff Unmet is the live redownload list). The quality
+cutoffs on the profiles are untouched, so this never starts chasing higher resolutions.
+Only the custom-format score drives an upgrade. The NAS has no GPU (section 11), which is
+why a forced transcode matters there: one 1080p software encode pegs all four cores.
+
+**Operational note:** adding a custom format makes Sonarr rescore every episode file inside
+one SQLite transaction. On a 6,000-file library over SMR that held the database locked for
+minutes and every concurrent API call (including provision.py's next step) failed with
+`database is locked`. provision.py is idempotent, so just re-run it once Sonarr settles.
+
 ## 4. Wire the *arr apps together
 
 1. **Prowlarr** (`:9696`): add indexers under **Indexers > +**. Built-in list includes

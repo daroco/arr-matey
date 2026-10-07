@@ -316,48 +316,105 @@ SAFETY_CF_REGEX = r"\.(exe|msi|scr|bat|cmd|vbs|jar|apk|dmg|pkg|ps1)($|[^a-z0-9])
 SAFETY_CF_SCORE = -10000
 
 
-def configure_safety_custom_format(app, label):
-    """Create-or-update a Custom Format that rejects executable/script-named releases,
-    then score it negatively enough (below every quality profile's minFormatScore, which
-    defaults to 0 and is left alone here) on every quality profile so it actually takes
-    effect regardless of which profile a series/movie uses."""
-    formats = app("GET", "/api/v3/customformat")
-    existing = next((c for c in formats if c["name"] == SAFETY_CF_NAME), None)
+def ensure_custom_format(app, label, name, spec_name, regex):
+    """Create-or-update a one-regex Custom Format (ReleaseTitleSpecification) by name.
+    Returns its id. Idempotent: re-running refreshes the regex in place."""
+    existing = next((c for c in app("GET", "/api/v3/customformat") if c["name"] == name), None)
     body = {
-        "name": SAFETY_CF_NAME,
+        "name": name,
         "includeCustomFormatWhenRenaming": False,
         "specifications": [
             {
-                "name": "Executable/script extension in release title",
+                "name": spec_name,
                 "implementation": "ReleaseTitleSpecification",
                 "negate": False,
                 "required": True,
-                "fields": [{"name": "value", "value": SAFETY_CF_REGEX}],
+                "fields": [{"name": "value", "value": regex}],
             }
         ],
     }
     if existing:
         body["id"] = existing["id"]
         app("PUT", f"/api/v3/customformat/{existing['id']}", json=body)
-        cf_id = existing["id"]
-        log.info(f"[{label}] custom format '{SAFETY_CF_NAME}' already existed, refreshed it")
-    else:
-        created = app("POST", "/api/v3/customformat", json=body)
-        cf_id = created["id"]
-        log.info(f"[{label}] created custom format '{SAFETY_CF_NAME}'")
+        log.info(f"[{label}] custom format '{name}' already existed, refreshed it")
+        return existing["id"]
+    created = app("POST", "/api/v3/customformat", json=body)
+    log.info(f"[{label}] created custom format '{name}'")
+    return created["id"]
 
+
+def score_custom_formats(app, label, scores, profile_settings=None):
+    """Apply {cf_id: (name, score)} to every quality profile, plus any extra top-level
+    profile settings (e.g. upgradeAllowed/cutoffFormatScore). One PUT per profile that
+    actually changes; untouched profiles are left alone."""
     for profile in app("GET", "/api/v3/qualityprofile"):
         items = profile.get("formatItems", [])
-        item = next((i for i in items if i["format"] == cf_id), None)
-        if item and item["score"] == SAFETY_CF_SCORE:
+        changed = False
+        for cf_id, (name, score) in scores.items():
+            item = next((i for i in items if i["format"] == cf_id), None)
+            if item and item["score"] == score:
+                continue
+            if item:
+                item["score"] = score
+            else:
+                items.append({"format": cf_id, "name": name, "score": score})
+            changed = True
+        for key, value in (profile_settings or {}).items():
+            if profile.get(key) != value:
+                profile[key] = value
+                changed = True
+        if not changed:
             continue
-        if item:
-            item["score"] = SAFETY_CF_SCORE
-        else:
-            items.append({"format": cf_id, "name": SAFETY_CF_NAME, "score": SAFETY_CF_SCORE})
         profile["formatItems"] = items
         app("PUT", f"/api/v3/qualityprofile/{profile['id']}", json=profile)
-        log.info(f"[{label}] quality profile '{profile['name']}' now rejects '{SAFETY_CF_NAME}'")
+        log.info(f"[{label}] quality profile '{profile['name']}' updated: "
+                 + ", ".join(f"{n}={s:+d}" for n, s in scores.values())
+                 + (f", {profile_settings}" if profile_settings else ""))
+
+
+def configure_safety_custom_format(app, label):
+    """Create-or-update a Custom Format that rejects executable/script-named releases,
+    then score it negatively enough (below every quality profile's minFormatScore, which
+    defaults to 0 and is left alone here) on every quality profile so it actually takes
+    effect regardless of which profile a series/movie uses."""
+    cf_id = ensure_custom_format(app, label, SAFETY_CF_NAME,
+                                 "Executable/script extension in release title", SAFETY_CF_REGEX)
+    score_custom_formats(app, label, {cf_id: (SAFETY_CF_NAME, SAFETY_CF_SCORE)})
+
+
+# Direct-play steering. Every client in this house (Roku, the Jellyfin Android app,
+# TVs, browsers) direct-plays 8-bit H.264; browsers can't do HEVC/x265 at all, Roku
+# can't do AV1, and 10-bit/HDR/Dolby Vision forces a tone-mapping transcode on
+# anything that isn't an HDR TV. The NAS has no GPU, so every forced transcode is a
+# software encode that pegs the CPU (README section 11). These formats make
+# Sonarr/Radarr grab the H.264 release first and never "upgrade" into an HEVC one:
+#   - the three "avoid" formats score below minFormatScore (0), so a release carrying
+#     any of them is rejected outright rather than merely ranked lower;
+#   - "H.264" scores +50 and cutoffFormatScore is set to 50 with upgradeAllowed on, so
+#     an existing x265 file counts as "cutoff unmet" and gets replaced by an H.264
+#     release as one turns up (Wanted > Cutoff Unmet is the redownload queue).
+# The quality cutoffs on the existing profiles are deliberately left alone, so
+# enabling upgrades here does NOT start chasing higher resolutions -- only the
+# custom-format score can trigger an upgrade.
+PLAYBACK_CF = {
+    "Avoid - HEVC/x265": (r"(?i)\b(x265|h\.?265|hevc)\b", -1000),
+    "Avoid - 10-bit/HDR/DV": (r"(?i)\b(10.?bit|hi10p?|hdr10?\+?|dolby.?vision|dv)\b", -1000),
+    "Avoid - AV1": (r"(?i)\bav1\b", -1000),
+    "Prefer - H.264": (r"(?i)\b(x264|h\.?264|avc)\b", 50),
+}
+PLAYBACK_CUTOFF_SCORE = 50
+
+
+def configure_playback_custom_formats(app, label):
+    scores = {}
+    for name, (regex, score) in PLAYBACK_CF.items():
+        cf_id = ensure_custom_format(app, label, name, "release title", regex)
+        scores[cf_id] = (name, score)
+    score_custom_formats(app, label, scores, profile_settings={
+        "upgradeAllowed": True,
+        "minFormatScore": 0,
+        "cutoffFormatScore": PLAYBACK_CUTOFF_SCORE,
+    })
 
 
 def configure_remote_path_mapping(app, remote_path, local_path):
@@ -707,6 +764,10 @@ def main():
     log.info("=== Safety: reject executable/script releases ===")
     configure_safety_custom_format(sonarr, "Sonarr")
     configure_safety_custom_format(radarr, "Radarr")
+
+    log.info("=== Playback: prefer 8-bit H.264, reject HEVC/10-bit/HDR/AV1 ===")
+    configure_playback_custom_formats(sonarr, "Sonarr")
+    configure_playback_custom_formats(radarr, "Radarr")
 
     if cfg.download_mode == "seedbox":
         provision_seedbox_mode(cfg, sonarr, radarr)
