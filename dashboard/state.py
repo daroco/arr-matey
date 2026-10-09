@@ -91,9 +91,22 @@ def get_download(db, download_id):
     ).fetchone()
 
 
+# A diagnosis that clears and re-fires within this window is re-opened silently (same
+# row, same "since" clock, no notification) instead of counting as new. Needed because
+# some rules flap on their own inputs: thin_swarm reads the torrent's live seeder count,
+# which on a dying swarm flickers 0 -> 1 -> 0 from one poll to the next, and every
+# return to 0 was a fresh "No seeders: Arrested Development" push -- 23 of them in two
+# days, all for one torrent that had never actually changed state in any way a person
+# would care about. 24h means a condition that genuinely resolves and comes back the
+# next day still notifies; one that flickers hourly notifies once.
+REOPEN_WINDOW_HOURS = 24
+
+
 def upsert_diagnosis(db, scope_type, scope_key, rule_id, severity, detail_json):
     """Insert-or-touch an open diagnosis row. first_seen_at is preserved across
-    repeated firings (that's the "since" clock); last_seen_at always advances."""
+    repeated firings (that's the "since" clock); last_seen_at always advances. A row
+    cleared less than REOPEN_WINDOW_HOURS ago is re-opened rather than duplicated, and
+    reports is_new=False so the sweep doesn't notify again."""
     now = utcnow_iso()
     existing = db.conn.execute(
         "SELECT id FROM diagnosis WHERE scope_type=? AND scope_key=? AND rule_id=? AND cleared_at IS NULL",
@@ -109,6 +122,19 @@ def upsert_diagnosis(db, scope_type, scope_key, rule_id, severity, detail_json):
                 "SELECT first_seen_at FROM diagnosis WHERE id=?", (existing[0],)
             ).fetchone()[0]
             return existing[0], first_seen_at, False   # is_new=False -- already known, don't re-notify
+        recent = db.conn.execute(
+            f"""SELECT id, first_seen_at FROM diagnosis
+                WHERE scope_type=? AND scope_key=? AND rule_id=? AND cleared_at IS NOT NULL
+                  AND cleared_at > datetime('now', '-{int(REOPEN_WINDOW_HOURS)} hours')
+                ORDER BY cleared_at DESC LIMIT 1""",
+            (scope_type, scope_key, rule_id),
+        ).fetchone()
+        if recent:
+            db.conn.execute(
+                "UPDATE diagnosis SET cleared_at=NULL, last_seen_at=?, severity=?, detail_json=? WHERE id=?",
+                (now, severity, detail_json, recent[0]),
+            )
+            return recent[0], recent[1], False   # re-opened within the window: known, not news
         cur = db.conn.execute(
             """INSERT INTO diagnosis (scope_type, scope_key, rule_id, severity, first_seen_at,
                                        last_seen_at, detail_json)

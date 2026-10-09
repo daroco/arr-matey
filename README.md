@@ -914,7 +914,15 @@ after having cleared), it fires a push via ntfy — reusing the exact same `NTFY
 on your phone just starts receiving these too. A diagnosis still open on the next sweep
 does **not** re-notify; if it stops firing (fixed, or the underlying condition resolved)
 its record clears, so if the exact same problem shows up again later it's treated as new
-and notifies again rather than staying silently suppressed forever.
+and notifies again rather than staying silently suppressed forever — **unless it was
+cleared less than 24 hours ago**, in which case the old record is re-opened silently
+(`REOPEN_WINDOW_HOURS` in `state.py`). That window exists because some rules flap on
+their own inputs: the no-seeders rule reads the torrent's live seeder count, which on a
+dying swarm flickers between 0 and 1 from one poll to the next, and without the window
+every flicker back to 0 was a fresh push (23 for one torrent in two days, seen live).
+Clearing is also skipped entirely for any sweep in which a source failed to fetch or a
+request failed to trace — a rule going quiet because Sonarr timed out is not the
+condition resolving.
 
 Notifications are **grouped and batched by category, not sent one per diagnosis**: one
 push per problem type per sweep, naming every title it hit — `No seeders (3)` /
