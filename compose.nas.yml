@@ -6,7 +6,7 @@
 # or set COMPOSE_FILE=compose.yaml:compose.nas.yml in .env once, so plain
 # `docker compose ...` picks both up every time (what README's NAS section does).
 #
-# It changes three things about the base stack:
+# It changes four things about the base stack:
 #
 # 1. Caddy gets its own LAN IP (macvlan) instead of the host's ports 80/443. DSM's
 #    own nginx owns both of those on the NAS's address and takes them back on every
@@ -39,6 +39,18 @@
 #    cleanup releases it, library copy on Volume 2) -- the deliberate, documented
 #    exception to the README's one-mount rule, not a regression of it. MOVIES_ROOT
 #    defaults to MEDIA_ROOT so this overlay is a no-op on a single-volume host.
+#
+# 4. Pi-hole joins the stack here. On Windows it was a separate compose project on
+#    the desktop, which meant the whole LAN's DNS died whenever that PC rebooted.
+#    It gets the same macvlan treatment as Caddy (its own LAN IP, PIHOLE_LAN_IP) so
+#    it owns :53 and :80 outright with nothing to collide with on the NAS. Two
+#    consequences of macvlan to know: the NAS *host* cannot reach a macvlan
+#    container, so DSM's own DNS servers must be set manually (Control Panel >
+#    Network > General) to the router or a public resolver, never to PIHOLE_LAN_IP
+#    -- otherwise every lookup the NAS itself makes (image pulls, the seedbox
+#    hostname inside the dashboard container) fails; and the router's LAN DNS
+#    setting is what points every other device at it. Config lives in
+#    ${CONFIG_ROOT}/pihole and migrates via Teleporter (README).
 
 services:
 
@@ -91,6 +103,25 @@ services:
       - ${CONFIG_ROOT}:${CONFIG_ROOT}
       - ${MEDIA_ROOT}:${MEDIA_ROOT}
       - ${MOVIES_ROOT:-${MEDIA_ROOT}}:${MOVIES_ROOT:-${MEDIA_ROOT}}
+    restart: unless-stopped
+
+  pihole:
+    image: pihole/pihole:latest
+    container_name: pihole
+    environment:
+      - TZ=${TZ:-UTC}
+      - FTLCONF_webserver_api_password=${PIHOLE_PASSWORD}
+      # Listens on every interface of its own network namespace -- on macvlan that
+      # is exactly its LAN address, nothing else, so ALL is the correct mode.
+      - FTLCONF_dns_listeningMode=ALL
+    volumes:
+      - ${CONFIG_ROOT}/pihole:/etc/pihole
+    cap_add:
+      - SYS_NICE
+    networks:
+      default: {}
+      lan:
+        ipv4_address: ${PIHOLE_LAN_IP}
     restart: unless-stopped
 
   romm:

@@ -164,7 +164,7 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    PH["Pi-hole: Local DNS records"] -.->|"resolves *.correll.tv to the LAN IP"| DEV["Any device on the LAN"]
+    PH["Pi-hole: Local DNS records<br/>(NAS: its own macvlan IP; Windows: desktop container)"] -.->|"resolves *.correll.tv to Caddy's IP"| DEV["Any device on the LAN"]
     DEV -->|http://sonarr.correll.tv| CD["Caddy :80"]
     DEV -->|http://radarr.correll.tv| CD
     DEV -->|http://prowlarr.correll.tv| CD

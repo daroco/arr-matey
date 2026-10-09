@@ -1412,6 +1412,32 @@ sudo mv /volume1/media/movies /volume1/media/movies.old && df -h /volume1 /volum
 `sudo docker exec radarr ls /media/movies | head` and `sudo docker exec radarr ls
 /media/downloads` prove the nested mounts: the first lists Volume 2, the second Volume 1.
 
+### Pi-hole on the NAS
+
+Pi-hole used to be a separate compose project on the Windows desktop, which made the
+desktop load-bearing for every device's DNS. On the NAS it's a service in
+`compose.nas.yml` with its own macvlan address (`PIHOLE_LAN_IP`, same mechanism as Caddy),
+so it owns ports 53 and 80 on that IP and nothing on DSM collides with it.
+
+**Two macvlan facts that bite:**
+
+- The NAS host cannot talk to a macvlan container. So the NAS's **own** DNS servers must be
+  set by hand (Control Panel → Network → General → "Manually configure DNS server") to the
+  router or a public resolver, never to `PIHOLE_LAN_IP`. Otherwise every lookup the NAS
+  itself makes fails: image pulls, DSM updates, and the seedbox hostname from inside the
+  `dashboard` container, which inherits the host's resolver. Containers on the bridge
+  network resolve through Docker's embedded DNS → the host's resolver, so this covers them.
+- The LAN only uses it because the router hands it out: Google Wifi → Network settings →
+  Advanced networking → DNS → Custom → `PIHOLE_LAN_IP`. Devices pick the change up on
+  their next DHCP renewal (toggle Wi-Fi to force it).
+
+**Migration** (one-off): export the old instance (Settings → Teleporter, or
+`GET /api/teleporter` with a session id), bring the new one up, import the archive the
+same way. Everything comes across: local DNS records, the `filter-rr=HTTPS` dnsmasq line
+(the ECH fix, CLAUDE.md), blocklists, clients, the lot. Then move the router's DNS, confirm
+`nslookup watch.correll.tv PIHOLE_LAN_IP` answers with Caddy's IP, and only then stop the
+old container on the desktop.
+
 ### Scheduled jobs
 
 Control Panel → Task Scheduler → Create → Scheduled Task → User-defined script, user

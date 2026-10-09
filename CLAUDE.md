@@ -274,6 +274,10 @@ file**: `uname` answers it. What changes there, all of it confined to the
   therefore *copies* across volumes -- the one deliberate exception to the one-mount
   rule, see `compose.nas.yml`'s header and README "Splitting the library across two
   volumes". Don't "fix" that by moving `downloads/`, and don't move `tv/`.
+- **Pi-hole is part of the NAS overlay** (`pihole` service, macvlan `PIHOLE_LAN_IP`), not a
+  separate project as on Windows. The NAS host can't reach a macvlan container, so DSM's
+  own DNS is set manually to the router, never to Pi-hole -- the `dashboard` container
+  inherits that resolver, which is how it still resolves the seedbox hostname.
 - `docker` needs `sudo` on DSM, and `MSYS_NO_PATHCONV=1` is meaningless (no Git Bash).
 - Seerr's container ignores `PUID` and runs as UID 1000: its config folder needs
   `chown 1000:1000`, everything else `PUID:PGID` (1026:100 on DSM, not 1000:1000).
