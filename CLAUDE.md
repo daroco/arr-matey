@@ -321,8 +321,12 @@ from scratch.
   Certificates → Encrypted Client Hello → **Off** (zone-wide, fixes every LAN client; the
   API route needs a Zone Settings scope the DDNS token deliberately lacks). Verify with
   `curl -H 'accept: application/dns-json' 'https://cloudflare-dns.com/dns-query?name=watch.<domain>&type=HTTPS'`
-  — the `ech=` parameter must be gone. Pi-hole-side alternative: `filter-rr=HTTPS` in
-  dnsmasq's extra lines, which strips the record for every domain on the LAN.
+  — the `ech=` parameter must be gone. **What's actually deployed (2026-10-09):** the
+  Pi-hole-side fix, because the Cloudflare toggle wasn't visible on this zone:
+  `pihole-FTL --config misc.dnsmasq_lines '[ "filter-rr=HTTPS" ]'` strips HTTPS-type
+  records for every domain on the LAN, so no LAN client ever sees an ECH key (browsers
+  still get HTTP/3 via Alt-Svc headers; nothing else depends on that record type). It
+  travels with Pi-hole's config (Teleporter) when Pi-hole moves to the NAS.
 - **Deleting files from local `downloads/` is futile while the seedbox still holds the
   torrent** — `rclone-sync.py` runs `rclone sync`, a mirror, so the next run re-downloads
   whatever was removed locally. Seen live 2026-10-07: 410 GB of never-imported packs were
