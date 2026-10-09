@@ -323,6 +323,15 @@ from scratch.
   `curl -H 'accept: application/dns-json' 'https://cloudflare-dns.com/dns-query?name=watch.<domain>&type=HTTPS'`
   — the `ech=` parameter must be gone. Pi-hole-side alternative: `filter-rr=HTTPS` in
   dnsmasq's extra lines, which strips the record for every domain on the LAN.
+- **Deleting files from local `downloads/` is futile while the seedbox still holds the
+  torrent** — `rclone-sync.py` runs `rclone sync`, a mirror, so the next run re-downloads
+  whatever was removed locally. Seen live 2026-10-07: 410 GB of never-imported packs were
+  deleted from `/volume1/media/downloads` to rescue a 100%-full volume, and ~400 GB of it
+  was back within hours. The only layer that sticks is the seedbox: `seedbox-cleanup.py`
+  removes torrents that are *imported and at their seed target*; anything never imported
+  (abandoned grabs, RAR'd packs Sonarr ignored, wrong-show grabs) has to be removed from the
+  seedbox client **with its data** (qBittorrent `torrents/delete` with `deleteFiles=true`),
+  after which the sync mirrors the deletion down on its own.
 - **Cloudflare's own API can have real outages independent of DNS/edge health** — check
   `cloudflarestatus.com` before assuming a local config problem when only API calls
   (not the actual proxied sites) are failing with `521`s or timeouts.
