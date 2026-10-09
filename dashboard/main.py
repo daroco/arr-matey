@@ -57,6 +57,7 @@ def _get_or_create_secret(cfg):
 
 def create_app():
     cfg = Config()
+    state_mod.set_reopen_window(cfg.renotify_hours)
     db = Database(str(cfg.db_path))
     auth = AuthState(db, cfg, _get_or_create_secret(cfg))
     poller = Poller(db, cfg)

@@ -112,6 +112,10 @@ class Config:
         # manual filter (tens of seconds to a couple minutes for this stack's ~150
         # requests) -- see dashboard/poller.py.
         self.notify_poll_seconds = int(env.get("DASHBOARD_NOTIFY_POLL_SECONDS", 900))
+        # Blank/0 = notify once per item+rule, ever (the default); N = a diagnosis that
+        # cleared more than N hours ago may notify again when it returns. See state.py.
+        _re = (env.get("DASHBOARD_RENOTIFY_HOURS") or "").strip()
+        self.renotify_hours = int(_re) if _re and int(_re) > 0 else None
         # Reused verbatim from scripts/rclone-sync.py/ddns-update.py's own vars --
         # same topic, so whatever's already subscribed on your phone just starts
         # receiving these too.

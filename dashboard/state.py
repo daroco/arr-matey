@@ -91,15 +91,23 @@ def get_download(db, download_id):
     ).fetchone()
 
 
-# A diagnosis that clears and re-fires within this window is re-opened silently (same
-# row, same "since" clock, no notification) instead of counting as new. Needed because
-# some rules flap on their own inputs: thin_swarm reads the torrent's live seeder count,
-# which on a dying swarm flickers 0 -> 1 -> 0 from one poll to the next, and every
-# return to 0 was a fresh "No seeders: Arrested Development" push -- 23 of them in two
-# days, all for one torrent that had never actually changed state in any way a person
-# would care about. 24h means a condition that genuinely resolves and comes back the
-# next day still notifies; one that flickers hourly notifies once.
-REOPEN_WINDOW_HOURS = 24
+# A diagnosis that clears and re-fires is re-opened silently (same row, same "since"
+# clock, no notification) instead of counting as new. Needed because some rules flap on
+# their own inputs: thin_swarm reads the torrent's live seeder count, which on a dying
+# swarm flickers 0 -> 1 -> 0 from one poll to the next, and every return to 0 was a
+# fresh "No seeders: Arrested Development" push -- 23 of them in two days for one
+# torrent that never changed in any way a person would care about. The owner's stated
+# preference is "notify me once about a thing, ever", so the default window is
+# unbounded (None): a given item+rule notifies the first time it is ever seen and never
+# again, however many times it clears and returns. DASHBOARD_RENOTIFY_HOURS in .env
+# turns the time-based behaviour on if that's ever wanted (e.g. 24 = a condition that
+# resolves and comes back the next day is news again).
+REOPEN_WINDOW_HOURS = None
+
+
+def set_reopen_window(hours):
+    global REOPEN_WINDOW_HOURS
+    REOPEN_WINDOW_HOURS = hours
 
 
 def upsert_diagnosis(db, scope_type, scope_key, rule_id, severity, detail_json):
@@ -122,10 +130,11 @@ def upsert_diagnosis(db, scope_type, scope_key, rule_id, severity, detail_json):
                 "SELECT first_seen_at FROM diagnosis WHERE id=?", (existing[0],)
             ).fetchone()[0]
             return existing[0], first_seen_at, False   # is_new=False -- already known, don't re-notify
+        window = ("" if REOPEN_WINDOW_HOURS is None
+                  else f"AND cleared_at > datetime('now', '-{int(REOPEN_WINDOW_HOURS)} hours')")
         recent = db.conn.execute(
             f"""SELECT id, first_seen_at FROM diagnosis
-                WHERE scope_type=? AND scope_key=? AND rule_id=? AND cleared_at IS NOT NULL
-                  AND cleared_at > datetime('now', '-{int(REOPEN_WINDOW_HOURS)} hours')
+                WHERE scope_type=? AND scope_key=? AND rule_id=? AND cleared_at IS NOT NULL {window}
                 ORDER BY cleared_at DESC LIMIT 1""",
             (scope_type, scope_key, rule_id),
         ).fetchone()
