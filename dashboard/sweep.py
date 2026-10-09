@@ -8,6 +8,7 @@ other (they need to agree on what counts as "stalled").
 import asyncio
 import json
 import logging
+import threading
 from collections import Counter, defaultdict
 
 from . import correlate, rules
@@ -46,13 +47,27 @@ async def run_sweep(snap, cfg, db, *, notify=False):
     that read identically. One "No seeders (6)" push naming the six shows is what a
     person actually wants to see on their phone. A title that trips two different
     rules appears in both category pushes; repeats of one title within a category
-    (several attempts of one show) collapse to an (xN) suffix."""
+    (several attempts of one show) collapse to an (xN) suffix.
+
+    Clearing is gated on the sweep's inputs being trustworthy. The "stops firing ->
+    clear -> fires again -> notify again" cycle is correct when the condition really
+    went away and came back, and wrong when the rule only went quiet because Sonarr
+    timed out during this poll (empty queue in the snapshot) or a trace raised. That
+    second case produced the same "No seeders: Arrested Development" push 23 times in
+    two days on the NAS while Sonarr was struggling. So: if any source failed in this
+    poll, or any request failed to trace, nothing is cleared this sweep -- open
+    diagnoses simply wait for a clean sweep to confirm or clear them."""
     candidate_ids = correlate.matched_request_ids(snap)
     is_seedbox = cfg.download_mode != "local"
     wrapper_summary, _ = local_fs.tail_wrapper_log(cfg.rclone_wrapper_log) if is_seedbox else (None, [])
     sem = asyncio.Semaphore(CONCURRENCY)
     stalled_ids = set()
     touched_keys = set()
+    trace_failures = 0
+    # Serialises the diagnosis writes the eight trace workers make -- SQLite only ever
+    # has one writer anyway, so letting them queue here instead of on the WAL lock
+    # keeps them from burning their busy_timeout against each other.
+    write_lock = threading.Lock()
     # headline -> {"severity": str, "titles": [(title, request_id), ...]}, flushed to
     # one push (and one in-app notification row) per headline/category.
     pending = defaultdict(lambda: {"severity": "info", "titles": []})
@@ -62,9 +77,10 @@ async def run_sweep(snap, cfg, db, *, notify=False):
         if not notify:
             return
         detail_json = json.dumps({"headline": d.headline, "detail": d.detail})
-        _id, _first_seen, is_new = await asyncio.to_thread(
-            state_mod.upsert_diagnosis, db, scope_type, scope_key, d.rule_id, d.severity.value, detail_json
-        )
+        def upsert():
+            with write_lock:
+                return state_mod.upsert_diagnosis(db, scope_type, scope_key, d.rule_id, d.severity.value, detail_json)
+        _id, _first_seen, is_new = await asyncio.to_thread(upsert)
         if is_new and d.severity.value != "ok":
             group = pending[d.headline]
             if SEVERITY_RANK[d.severity.value] > SEVERITY_RANK[group["severity"]]:
@@ -78,6 +94,8 @@ async def run_sweep(snap, cfg, db, *, notify=False):
             try:
                 trace = await asyncio.to_thread(correlate.build_trace_detail, request_id, snap, cfg)
             except Exception:
+                nonlocal trace_failures
+                trace_failures += 1
                 log.warning(f"sweep: request {request_id} failed to trace, skipping", exc_info=True)
                 return
             if trace is None:
@@ -96,7 +114,12 @@ async def run_sweep(snap, cfg, db, *, notify=False):
 
     if notify:
         await asyncio.to_thread(_flush_pending, cfg, db, pending)
-        await asyncio.to_thread(_clear_untouched, db, touched_keys)
+        unhealthy = await asyncio.to_thread(_unhealthy_sources, db)
+        if trace_failures or unhealthy:
+            log.warning(f"sweep: not clearing untouched diagnoses -- inputs unreliable "
+                        f"({trace_failures} trace failure(s), failing sources: {unhealthy or 'none'})")
+        else:
+            await asyncio.to_thread(_clear_untouched, db, touched_keys)
 
     return stalled_ids
 
@@ -121,6 +144,16 @@ def _flush_pending(cfg, db, pending):
             request_id=next(iter(request_ids)) if len(request_ids) == 1 else None,
             severity=group["severity"], headline=msg_title[len("Dashboard: "):], message=message,
         )
+
+
+def _unhealthy_sources(db):
+    """Sources whose most recent poll failed (snapshot.guard records this). A snapshot
+    built while e.g. Sonarr was timing out has an empty queue/history for it, which
+    makes every Sonarr-backed rule go silent -- not because anything resolved."""
+    rows = db.conn.execute(
+        "SELECT source FROM source_health WHERE consecutive_failures > 0 AND source != '__poll__'"
+    ).fetchall()
+    return [r["source"] for r in rows]
 
 
 def _clear_untouched(db, touched_keys):

@@ -129,10 +129,17 @@ class Database:
         _ = self.conn
 
     def _connect(self):
-        conn = sqlite3.connect(self.path, check_same_thread=False, timeout=5)
+        # 60s, not the 5s this started with: on the NAS the database sits on an SMR
+        # volume shared with the media library, and the notification sweep's eight
+        # worker threads each write diagnoses while the poller writes source health
+        # on its own thread. Under disk contention a write can wait well past 5s for
+        # the WAL lock, and the result was every sweep for two days dying with
+        # "database is locked" (and the clear/re-notify churn that followed).
+        # Waiting is always the right call here; nothing in this app is latency-bound.
+        conn = sqlite3.connect(self.path, check_same_thread=False, timeout=60)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL" if self.path != ":memory:" else "PRAGMA journal_mode=MEMORY")
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA busy_timeout=60000")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(SCHEMA)
         conn.commit()
