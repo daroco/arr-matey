@@ -1446,6 +1446,25 @@ same way. Everything comes across: local DNS records, the `filter-rr=HTTPS` dnsm
 `nslookup watch.correll.tv PIHOLE_LAN_IP` answers with Caddy's IP, and only then stop the
 old container on the desktop.
 
+### The inotify watch limit (realtime monitoring)
+
+DSM ships `fs.inotify.max_user_watches=8192`. Jellyfin's realtime monitor needs one watch
+per directory it watches, and the TV tree alone is thousands, so on a stock NAS it dies
+with `The configured user limit (8192) on the number of inotify watches has been reached`
+(seen in Jellyfin's log) and silently falls back to scheduled scans — the same "realtime
+is only a backup" situation as Windows, for a different reason. Raise it with a boot-time
+task: Control Panel → Task Scheduler → Create → Triggered Task → User-defined script,
+event **Boot-up**, user `root`:
+
+```
+sysctl -w fs.inotify.max_user_watches=524288
+sysctl -w fs.inotify.max_user_instances=512
+```
+
+Run it once by hand after creating it (sysctl values don't survive a reboot otherwise,
+which is the whole point of the boot trigger), then restart `jellyfin` (and `romm`,
+whose watcher has the same need) so they re-register their watches.
+
 ### Scheduled jobs
 
 Control Panel → Task Scheduler → Create → Scheduled Task → User-defined script, user

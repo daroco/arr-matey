@@ -263,10 +263,12 @@ file**: `uname` answers it. What changes there, all of it confined to the
   host-path logic in `dashboard/config.py` and the scripts holds unmodified; the
   `*_BASE_URL` / `JELLYFIN_BASE_URL` / `DASHBOARD_UPSTREAM` overrides swap `localhost`
   and `host.docker.internal` for service names.
-- **The filesystem is case-sensitive and inotify works.** RomM's library folder must be
-  literally lowercase `roms/` (the "don't fix the casing" note above is a Docker Desktop
-  fact, not a NAS one), and Jellyfin's realtime monitor / RomM's watcher are reliable
-  there, unlike the NTFS bind-mount situation described below.
+- **The filesystem is case-sensitive and inotify works — once the watch limit is raised.**
+  RomM's library folder must be literally lowercase `roms/` (the "don't fix the casing"
+  note above is a Docker Desktop fact, not a NAS one). Jellyfin's realtime monitor / RomM's
+  watcher are reliable there *only* with `fs.inotify.max_user_watches` raised from DSM's
+  8192 default (README NAS section, a boot-time Task Scheduler sysctl); below that Jellyfin
+  logs "configured user limit (8192) ... reached" and quietly stops watching `/media/tv`.
 - **The movie library is on a second volume** (`MOVIES_ROOT=/volume2/media2`); `tv/` and the
   ONE `downloads/` staging tree stay on Volume 1. Radarr mounts Volume 2 at `/media` with
   Volume 1's `downloads/` nested at `/media/downloads`; Jellyfin/Bazarr get Volume 2's
