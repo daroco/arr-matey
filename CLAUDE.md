@@ -359,6 +359,25 @@ from scratch.
   cross. It's enabled on both libraries as of this writing, but Sonarr/Radarr's *native*
   Jellyfin/Emby connection (see `provision.py` above) is the reliable path; real-time
   monitoring is a backup, not the primary mechanism.
+- **Jellyfin 10.11's library database needs its `PLACEHOLDER` row, or every delete fails
+  and the scan silently stops adding new items in that folder.** Before deleting an item,
+  10.11 re-points the item's `UserData` rows (watch history) at a fixed placeholder
+  `BaseItems` row, `Id = 00000000-0000-0000-0000-000000000001`, `Type = PLACEHOLDER`.
+  A hand-rolled "wipe the catalog" (`DELETE FROM BaseItems ...`, done once during the
+  Windows migration) takes that row with it. Symptom, seen live 2026-10-07 to 10-11: nine
+  Radarr imports never appeared in Jellyfin although the files were readable and Jellyfin's
+  own `/Environment/DirectoryContents` listed them; the log had `SQLite Error 19:
+  'FOREIGN KEY constraint failed'` on an `UPDATE "UserData" ... SET "ItemId" =
+  '00000000-...-0001'`, plus `Error while performing a library operation`, and the same
+  `Removing item ... Project Hail Mary` line at every scan (an upgraded movie whose old
+  record could never be deleted). The scanner removes stale items *before* creating new
+  ones, so one undeletable stale item aborts the whole folder. Diagnose with a copy of
+  `${CONFIG_ROOT}/jellyfin/data/data/jellyfin.db` (`pragma foreign_key_check` is clean --
+  the row is missing, not dangling); fix by inserting the row, idempotent SQL in
+  `scripts/sql/jellyfin-placeholder-fix.sql`, safe against a running server:
+  `docker run --rm -v <that data dir>:/db -v $PWD/scripts/sql:/sql:ro alpine sh -c
+  'apk add -q sqlite && sqlite3 /db/jellyfin.db < /sql/jellyfin-placeholder-fix.sql'`.
+  If the catalog ever has to be wiped again, keep that row.
 - **Always check for an active Jellyfin session (`docker logs jellyfin` for recent
   `SessionManager`/transcode activity) before restarting the `jellyfin` container** —
   restarting it drops any in-progress playback with no warning to the viewer. This has
