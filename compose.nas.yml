@@ -39,6 +39,13 @@
 #    cleanup releases it, library copy on Volume 2) -- the deliberate, documented
 #    exception to the README's one-mount rule, not a regression of it. MOVIES_ROOT
 #    defaults to MEDIA_ROOT so this overlay is a no-op on a single-volume host.
+#    The nested mounts sit on real directories of the outer mount (an empty
+#    ${MEDIA_ROOT}/movies on Volume 1, ${MOVIES_ROOT}/downloads on Volume 2) that
+#    Docker creates at container start. Renaming or deleting one of those on the
+#    host while the container runs leaves the mount alive but unreachable (no
+#    directory entry leads to it) -- Jellyfin lost /media/movies for four days this
+#    way after the migration's cleanup `mv`. Restart the container after any such
+#    move, and don't tidy those empty folders away. README has the long version.
 #
 # 4. Pi-hole joins the stack here. On Windows it was a separate compose project on
 #    the desktop, which meant the whole LAN's DNS died whenever that PC rebooted.

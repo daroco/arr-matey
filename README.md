@@ -1414,11 +1414,27 @@ echo MOVIES_ROOT=/volume2/media2 >> .env   # or edit; see .env.example's NAS blo
 sudo docker compose up -d radarr bazarr jellyfin dashboard
 # 6. only after Radarr shows no missing files and Jellyfin plays a movie from it:
 sudo mv /volume1/media/movies /volume1/media/movies.old && df -h /volume1 /volume2
+# 7. REQUIRED right after that mv (check for Jellyfin sessions first):
+sudo docker restart jellyfin bazarr
 # ... and a few days later: sudo rm -rf /volume1/media/movies.old
 ```
 
 `sudo docker exec radarr ls /media/movies | head` and `sudo docker exec radarr ls
 /media/downloads` prove the nested mounts: the first lists Volume 2, the second Volume 1.
+
+**Step 7 is not optional, and the empty `movies/` folder it leaves on Volume 1 must stay.**
+A nested bind mount needs a directory on the *outer* mount to sit on, and here that
+directory is `/volume1/media/movies` -- the very folder step 6 renames away. Linux lets
+you rename or delete a directory that's a mountpoint in another mount namespace, and the
+container's mount survives it, but with no directory entry leading to it any more: inside
+Jellyfin `ls /media/` simply has no `movies`, `docker inspect` still lists the mount, and
+the log says `Skipping realtime monitor for "/media/movies" because the path does not
+exist`. Seen live on the DS925+ (2026-10-07 to 10-11): Radarr kept importing to Volume 2
+while Jellyfin and Bazarr silently stopped seeing any movie added after the move. A
+container restart re-performs the mounts, and Docker recreates the mountpoint directory
+on the host as a side effect -- that is why an empty `/volume1/media/movies` reappears,
+and deleting it "to tidy up" puts both containers straight back into this state until
+their next restart.
 
 ### Pi-hole on the NAS
 
