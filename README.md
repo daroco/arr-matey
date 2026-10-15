@@ -444,7 +444,14 @@ Setup:
    the IPv4 default routes first and skips the run — records keep their last good value —
    whenever a VPN-looking route is present, pushing one "DDNS paused" ntfy notification per
    VPN session and a "DDNS resumed" one once it's gone. Disconnecting the VPN is still the
-   fix; the guard just stops the damage.
+   fix; the guard just stops the damage. **Failure pushes are rate-limited the same way**:
+   a single failed run is almost always a transient on Cloudflare's side (a `500` on one
+   record's read, seen 2026-10-15, with every record correct again five minutes later), so
+   the script counts consecutive failures in `${CONFIG_ROOT}/ddns-failures.count` and only
+   pushes "DDNS update FAILED" once two runs in a row have failed -- with the error
+   classified in the message (Cloudflare server error / token rejected / timeout / no
+   network) so the phone says whether it needs a human -- then one "DDNS recovered" push
+   after the next success. Everything is still in `ddns-update.log` every run.
 9. **Point Jellyfin's own Known Proxies / Published Server URLs at Caddy** — Dashboard →
    Networking, native Jellyfin install. Without **Known proxies** set to the address
    Caddy's requests actually arrive from, every remote session shows Caddy's IP instead of

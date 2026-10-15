@@ -62,6 +62,14 @@ LOG_PATH = Path(CONFIG_ROOT) / "ddns-update.log"
 # so the "paused"/"resumed" ntfy pushes fire once per VPN session, not every
 # 5 minutes for as long as the VPN stays up.
 VPN_PAUSE_FLAG = Path(CONFIG_ROOT) / "ddns-vpn-paused.flag"
+# Holds the count of consecutive failed runs. A single failure is almost always a
+# transient on Cloudflare's side or the network (seen live 2026-10-15: one 500
+# from the API on one record's read, every record correct again five minutes
+# later), and the next run self-heals it -- so the failure push only fires once
+# two runs in a row have failed, and one "recovered" push follows the first
+# success after that. Same notify-once philosophy as the dashboard.
+FAIL_COUNT_PATH = Path(CONFIG_ROOT) / "ddns-failures.count"
+FAIL_NOTIFY_THRESHOLD = 2
 # Interface names that mean "this default route is a tunnel, not the WAN".
 VPN_ALIAS_PATTERN = re.compile(r"vpn|wireguard|openvpn|tailscale|mullvad|nord|tap-|tun", re.IGNORECASE)
 PHYSICAL_ALIAS_PATTERN = re.compile(r"^(Ethernet|Wi-Fi|WiFi|Local Area Connection)", re.IGNORECASE)
@@ -120,6 +128,46 @@ def notify_ntfy(title, message):
             log.warning(f"ntfy notification rejected ({r.status_code}): {title} -- {r.text[:200]}")
     except requests.RequestException:
         log.exception(f"ntfy notification failed: {title}")
+
+
+def describe_error(e):
+    """One line a phone screen can act on: what kind of failure, and whether it
+    needs a human. The raw exception text (long Cloudflare URLs, urllib3 chains)
+    goes in the log, not the push."""
+    if isinstance(e, requests.HTTPError) and e.response is not None:
+        code = e.response.status_code
+        host = e.response.url.split("/")[2] if e.response.url else "?"
+        if code in (401, 403):
+            return f"{host} rejected the API token ({code}) -- needs attention"
+        if code == 429:
+            return f"{host} rate-limited us ({code})"
+        if code >= 500:
+            return f"{host} server error ({code}) -- their side, usually transient"
+        return f"{host} returned HTTP {code}"
+    if isinstance(e, requests.Timeout):
+        return "timed out reaching Cloudflare / the IP echo service"
+    if isinstance(e, requests.ConnectionError):
+        return "could not connect (DNS or network down from the NAS?)"
+    if isinstance(e, requests.RequestException):
+        return f"request failed: {type(e).__name__}"
+    return str(e)[:160] or type(e).__name__
+
+
+def read_fail_count():
+    try:
+        return int(FAIL_COUNT_PATH.read_text().strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def write_fail_count(n):
+    try:
+        if n:
+            FAIL_COUNT_PATH.write_text(str(n))
+        elif FAIL_COUNT_PATH.exists():
+            FAIL_COUNT_PATH.unlink()
+    except OSError:
+        log.exception("could not update the failure counter")
 
 
 def current_wan_ip():
@@ -210,10 +258,35 @@ def main():
             notify_ntfy("DDNS updated", f"{hostname}: {old_ip} -> {new_ip}")
         except Exception as e:
             log.exception(f"failed to update {hostname}")
-            failures.append(f"{hostname}: {e}")
+            failures.append((hostname, e))
 
     if failures:
-        raise RuntimeError(f"{len(failures)} of {len(DDNS_RECORDS)} record(s) failed: {'; '.join(failures)}")
+        detail = "; ".join(f"{h}: {describe_error(e)}" for h, e in failures)
+        raise RuntimeError(f"{len(failures)} of {len(DDNS_RECORDS)} record(s) failed: {detail}")
+
+
+def report_failure(e):
+    """Logs every failure; pushes only once the failure has persisted across
+    FAIL_NOTIFY_THRESHOLD consecutive runs, and then not again until it recovers."""
+    n = read_fail_count() + 1
+    write_fail_count(n)
+    log.exception(f"ddns-update failed (consecutive failures: {n})")
+    if n == FAIL_NOTIFY_THRESHOLD:
+        notify_ntfy("DDNS update FAILED",
+                    f"{n} runs in a row. {describe_error(e)}. "
+                    f"Records keep their last value; one push until it recovers. Log: ddns-update.log")
+    elif n > FAIL_NOTIFY_THRESHOLD:
+        log.warning("still failing, push already sent")
+
+
+def report_success():
+    n = read_fail_count()
+    if n:
+        write_fail_count(0)
+        if n >= FAIL_NOTIFY_THRESHOLD:
+            notify_ntfy("DDNS recovered", f"back to normal after {n} failed run(s)")
+        else:
+            log.info(f"recovered after {n} failed run(s) (below the push threshold)")
 
 
 def setup_logging():
@@ -230,7 +303,7 @@ if __name__ == "__main__":
     setup_logging()
     try:
         main()
-    except Exception:
-        log.exception("ddns-update failed")
-        notify_ntfy("DDNS update FAILED", "see ddns-update.log")
+    except Exception as e:
+        report_failure(e)
         sys.exit(1)
+    report_success()
