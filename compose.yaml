@@ -130,13 +130,23 @@ services:
   # that needs its own follow-up (GPU passthrough into a Windows container is
   # vendor-specific and not a drop-in addition to this block).
   jellyfin:
-    # Pinned to match the native install's exact version (confirmed via
-    # /System/Info/Public before migration) -- :latest resolved to a newer minor
-    # version whose on-disk DB layout differs (nested data/data/jellyfin.db vs
-    # this version's flat data/jellyfin.db), discovered live when the newer image
-    # silently initialized a fresh empty database instead of using the migrated
-    # one. Bump deliberately later, not implicitly via :latest.
-    image: lscr.io/linuxserver/jellyfin:10.11.8
+    # Pinned, never :latest -- :latest once resolved to a newer minor version whose
+    # on-disk DB layout differs (nested data/data/jellyfin.db vs flat
+    # data/jellyfin.db), discovered live when the newer image silently initialized
+    # a fresh empty database instead of using the migrated one. Bump deliberately,
+    # with a DB backup first (README "Bumping the Jellyfin version").
+    #
+    # 10.11.8 -> 10.11.11 (2026-11-13): 10.11.8 has a UserManager bug where a stale
+    # cached User row makes every save for that user fail with
+    # DbUpdateConcurrencyException -- symptom is a 500 on /Users/AuthenticateByName
+    # (Seerr shows "unknown error" on a *correct* password, a clean rejection on a
+    # wrong one) plus one logged exception per minute per open session. Fixed
+    # upstream in 10.11.9 (PR #15368); 10.11.10 also patched three security
+    # advisories including an unauthenticated FFmpeg argument injection
+    # (GHSA-wwwm-px48-fpvq), which matters for an internet-facing server.
+    # 10.11.10+ adds a Users.NormalizedUsername column + startup routine; 10.11.11
+    # is the version Jellyfin 12.x wants as its upgrade starting point.
+    image: lscr.io/linuxserver/jellyfin:10.11.11
     container_name: jellyfin
     environment:
       - PUID=${PUID:-1000}

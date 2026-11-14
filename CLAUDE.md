@@ -378,6 +378,20 @@ from scratch.
   `docker run --rm -v <that data dir>:/db -v $PWD/scripts/sql:/sql:ro alpine sh -c
   'apk add -q sqlite && sqlite3 /db/jellyfin.db < /sql/jellyfin-placeholder-fix.sql'`.
   If the catalog ever has to be wiped again, keep that row.
+- **Jellyfin login returning `500` for one user (Seerr: "unknown error" on the *right*
+  password, a clean "invalid credentials" on a wrong one) is Jellyfin 10.11.8's stale
+  user-cache bug, not a password problem.** `UserManager` keeps users in memory; once a
+  cached `User`'s `RowVersion` gets ahead of the DB row (two devices of the same account
+  saving at once is enough), every save for that user throws
+  `DbUpdateConcurrencyException: expected to affect 1 row(s), but actually affected 0`.
+  Login hits that save (`AuthenticateUser → UpdateUserAsync`), so a correct password
+  500s while a wrong one still 401s cleanly; existing device sessions keep working, and
+  `SessionManager.LogSessionActivity` logs the same exception about once a minute per
+  open session (~1,400/day here). Seen live 2026-10-14 and again 2026-11-11..13 on the
+  NAS. A restart clears it only until the next race. Real fix is the image bump to
+  10.11.11 in `compose.yaml` (upstream PR #15368 landed in 10.11.9); if it ever shows
+  up on a newer version, that's a new upstream bug, not this one. Check with
+  `grep -c DbUpdateConcurrencyException ${CONFIG_ROOT}/jellyfin/log/log_<date>.log`.
 - **Always check for an active Jellyfin session (`docker logs jellyfin` for recent
   `SessionManager`/transcode activity) before restarting the `jellyfin` container** —
   restarting it drops any in-progress playback with no warning to the viewer. This has

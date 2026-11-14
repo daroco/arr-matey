@@ -33,6 +33,23 @@ since a version mismatch against an existing library's on-disk layout is a real,
 edge if you're ever migrating an existing native install's data into this stack (see the
 `jellyfin` service's own comment).
 
+**Bumping the Jellyfin version** (the pin is in `compose.yaml`; the service comment says
+why each bump happened): check nobody is watching (`/Sessions?activeWithinSeconds=600`
+with the API key, or `docker logs jellyfin` for `SessionManager` activity), stop the
+container, back up the database folder, then pull and start the new image and watch the
+first boot — point releases run EF migrations and one-off "migration routines" on
+startup, and a failed routine crash-loops the container instead of serving:
+
+```bash
+sudo docker stop jellyfin
+sudo cp -a "$CONFIG_ROOT/jellyfin/data/data" "$CONFIG_ROOT/jellyfin/data/data.bak-$(date +%F)"
+git pull && sudo docker compose pull jellyfin && sudo docker compose up -d jellyfin
+sudo docker logs -f jellyfin        # wait for "Startup complete"; Ctrl-C
+```
+
+Roll back by restoring that folder over `data/` and re-pinning the old tag — the DB
+schema moves forward on upgrade and the old binary won't open the newer schema.
+
 Built for Windows + Docker Desktop, with host paths on a `D:` drive. Adjust paths if your
 setup differs.
 
