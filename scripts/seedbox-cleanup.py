@@ -143,7 +143,8 @@ def fetch_imported_hashes(base_url, api_key):
 
 def cleanup_qbittorrent(cfg, imported_hashes):
     for t in qbt_get_torrents(cfg, cfg.ratio_category):
-        if t["state"] != "pausedUP":
+        # qBittorrent 5 renamed pausedUP to stoppedUP; accept both.
+        if t["state"] not in ("pausedUP", "stoppedUP"):
             continue
         h = t["hash"].lower()
         name = t["name"]

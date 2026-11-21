@@ -73,7 +73,7 @@ class Config:
             self.public_category = env.get("PUBLIC_CATEGORY", "public")
             self.private_tracker_name = env.get("PRIVATE_TRACKER_NAME", "TorrentLeech")
             self.private_seed_ratio = float(env.get("PRIVATE_TRACKER_SEED_RATIO", 1))
-            self.private_seed_time = int(env.get("PRIVATE_TRACKER_SEED_TIME_MINUTES", 14400))
+            self.private_seed_time = int(env.get("PRIVATE_TRACKER_SEED_TIME_MINUTES", 20160))
             # Deliberately separate from the private tracker's values above -- Transmission
             # (public trackers, no real seed obligation) needs to be tunable independently,
             # not silently pinned to whatever the private tracker's Hit & Run rule requires.

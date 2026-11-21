@@ -26,6 +26,7 @@ STATE_MAP = {
     "uploading": "seeding",
     "stalledUP": "seeding",
     "pausedUP": "complete_paused",
+    "stoppedUP": "complete_paused",  # qBittorrent 5 name for pausedUP
     "queuedUP": "seeding",
     "checkingUP": "seeding",
     "forcedUP": "seeding",
@@ -39,6 +40,7 @@ STATE_MAP = {
     "error": "error",
     "missingFiles": "error",
     "pausedDL": "complete_paused",
+    "stoppedDL": "complete_paused",  # qBittorrent 5 name for pausedDL
 }
 
 
