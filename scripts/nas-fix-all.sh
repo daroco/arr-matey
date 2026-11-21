@@ -3,14 +3,14 @@
 #   cd /volume1/docker/acquisitions && git pull && sudo bash scripts/nas-fix-all.sh
 # Flags:
 #   --force-jellyfin   recreate Jellyfin even if someone is watching
-#   --lean             also stop satisfactory + flaresolverr to free RAM (4 GB box)
-#   --skip-pihole      don't bring Pi-hole up
+#   --lean             also stop flaresolverr to free RAM (4 GB box)
+#   --pihole           also bring Pi-hole up on the NAS (default: it stays on the PC)
 set -u
 cd "$(dirname "$0")/.." || exit 1
 [ "$(id -u)" = 0 ] || { echo "run with sudo"; exit 1; }
-FORCE=0; LEAN=0; PIHOLE=1
+FORCE=0; LEAN=0; PIHOLE=0
 for a in "$@"; do case "$a" in
-  --force-jellyfin) FORCE=1;; --lean) LEAN=1;; --skip-pihole) PIHOLE=0;;
+  --force-jellyfin) FORCE=1;; --lean) LEAN=1;; --pihole) PIHOLE=1;;
   *) echo "unknown flag $a"; exit 1;; esac; done
 envval() { grep -E "^$1=" .env | tail -1 | cut -d= -f2- | tr -d '\r"'; }
 RESULTS=()
@@ -47,6 +47,15 @@ else
   fi
 fi
 
+echo "=== 2b. Remove RomM + Satisfactory (containers only; data and ROMs stay on disk) ==="
+GONE=""
+for c in romm romm-db satisfactory; do
+  if docker inspect "$c" >/dev/null 2>&1; then
+    docker stop "$c" >/dev/null 2>&1; docker rm "$c" >/dev/null 2>&1 && GONE="$GONE $c"
+  fi
+done
+if [ -n "$GONE" ]; then note "unwanted services removed:$GONE"; else note "unwanted services: none present, nothing to do"; fi
+
 echo "=== 3. Dashboard restart (notify-once + qBittorrent 5 state fix) ==="
 docker compose restart dashboard && note "dashboard: restarted" || note "dashboard: restart FAILED"
 sleep 8
@@ -79,8 +88,8 @@ fi
 
 if [ "$LEAN" = 1 ]; then
   echo "=== 6. Lean mode ==="
-  docker stop satisfactory flaresolverr >/dev/null 2>&1
-  note "lean: stopped satisfactory + flaresolverr (start again with: sudo docker start satisfactory flaresolverr)"
+  docker stop flaresolverr >/dev/null 2>&1
+  note "lean: stopped flaresolverr (start again with: sudo docker start flaresolverr)"
 fi
 
 echo; echo "=== Memory: this is what the lag is ==="
@@ -91,9 +100,6 @@ echo; echo "================ SUMMARY ================"
 for r in "${RESULTS[@]}"; do echo " - $r"; done
 cat <<TXT
 
-Still manual (a script cannot do these):
- - Router: after checking  nslookup watch.$(envval DOMAIN) $(envval PIHOLE_LAN_IP)  from a PC
-   answers $(envval CADDY_LAN_IP), point the router's DNS at $(envval PIHOLE_LAN_IP) and stop the old Pi-hole.
- - DSM > Control Panel > Network: DNS must be the router, never Pi-hole.
+Still manual (a script cannot do this):
  - DSM Task Scheduler: confirm the seedbox-cleanup task is enabled.
 TXT

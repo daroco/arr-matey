@@ -263,6 +263,9 @@ services:
   # deliberate act (softer version of jellyfin's exact pin above). Redis is
   # bundled inside the image -- no separate cache container needed.
   romm:
+    # Off unless COMPOSE_PROFILES includes "romm" -- not wanted on the NAS right now.
+    profiles:
+      - romm
     image: rommapp/romm:5
     container_name: romm
     environment:
@@ -319,6 +322,9 @@ services:
   # folder copy. Never published to the host -- romm reaches it container-to-
   # container only.
   romm-db:
+    # Off unless COMPOSE_PROFILES includes "romm" -- not wanted on the NAS right now.
+    profiles:
+      - romm
     image: mariadb:11
     container_name: romm-db
     environment:
